@@ -1,7 +1,7 @@
 # Raphp Progress Tracker
 
 **Last updated:** 2026-11-06
-**Current position:** **Phase 1 in progress.** P1.1 to P1.5 are done: the composition root is built, reviewed, and mutation-tested. Only **P1.6 (error model)** remains in Phase 1. Your commit `aa1e919` (the first version of P1.5) is on GitHub and CI was green on it (21 s). My later work (the hardening, more tests, the doc updates) is **uncommitted**, so CI has not yet run on the final version.
+**Current position:** **Phase 2 (runtime core and IPC) is in progress: P2.1 to P2.5 are done, P2.6 (RPC peer and middleware) is next.** `make check` exits 0 with **649 tests, 3014 assertions**. You told me to continue to the next phase after Checkpoint 1. CI was green on your commits `f221905` and `aa1e919`; everything I have done since (P1.5 hardening, P1.6, the chrome decision, P2.1 to P2.3, doc updates) is **uncommitted**, so CI has not run on it.
 **How this file works:** I update it at the end of every step and whenever something is decided or found. The plan lives in `IMPLEMENTATION_PLAN.md`, the design in `FRAMEWORK.md`, the evidence in `SPIKE_REPORT.md`. This file only records what has actually happened.
 
 Legend: ✅ done and verified · 🔄 in progress · ⏳ not started · ⛔ blocked · ⚠️ done with caveats
@@ -13,8 +13,8 @@ Legend: ✅ done and verified · 🔄 in progress · ⏳ not started · ⛔ bloc
 | Phase | Name | Status | Steps done |
 |---|---|---|---|
 | 0 | Spikes and verification | ✅ finished (accepted when you started Phase 1) | 9 of 9 (P0.0 to P0.8) |
-| 1 | Repository foundation | 🔄 in progress | 5 of 6 (P1.1 to P1.5) |
-| 2 | Runtime core and IPC | ⏳ not started | 0 |
+| 1 | Repository foundation | ✅ finished, **awaiting your Checkpoint 1 review** | 6 of 6 (P1.1 to P1.6) |
+| 2 | Runtime core and IPC | 🔄 in progress | 5 of 13 (P2.1 to P2.5) |
 | 2B | Tier 1 standard library | ⏳ not started | 0 |
 | 3 | `libraphp` shim MVP | ⏳ not started | 0 |
 | 4 | UI framework | ⏳ not started | 0 |
@@ -23,7 +23,7 @@ Legend: ✅ done and verified · 🔄 in progress · ⏳ not started · ⛔ bloc
 | 7 | Runtime tier 2 | ⏳ not started | 0 |
 | 8 | Tier 3 and hardening | ⏳ not started | 0 |
 
-**No production code exists yet.** Everything built so far is throwaway spike code under `spikes/`, documentation, and the Phase 1 repository scaffold.
+**Production code so far:** configuration, logging, clock, container, the error model (Phase 1), and the kernel, the background task runner and the NDJSON codec (Phase 2). The shim, the `rlm` CLI and every IPC component above the codec do not exist yet.
 
 ---
 
@@ -73,12 +73,14 @@ Clicks and key presses; a tray icon or menu; how the dialog looks; attaching the
 | — | **Rename to Raphp** (D28) | ✅ | Code and config by me (`raphp/raphp`, `Raphp\` namespace, `rlm/`); docs by three editors and two reviewers. Both reviewers passed and I fixed their two low notes. `make check` still exits 0. The old name remains only in the history rows D22, D27 and D28, in the spike code and its measurement rows, and in the former-name notes in README, CONTRIBUTING and CHANGELOG |
 | **P1.4** | Continuous integration | ✅ | **Proven.** Your push (`f221905`) triggered the first run: it succeeded in 18 s on a GitHub runner with PHP 8.5.12 and `ffi` enabled. The "Run every check" step showed the formatter clean, PHPStan `[OK]`, PHPUnit `OK (7 tests, 8 assertions)`, and the Rust step skipped as designed. `.github/workflows/ci.yml`; actions `checkout@v7`, `setup-php@v2`, `rust-toolchain@stable`, pinned by tag, not commit. **Watch:** CI's stable Rust is newer than yours (rustfmt 1.10.0 and clippy 0.1.99 against 1.9.0 and 0.1.95), so a lint could pass locally and fail in CI later. P3.1 should pin the toolchain |
 | **P1.5** | Composition root skeleton | ✅ | `make check` exits 0: **302 tests, 481 assertions**, PHPStan `level: max`. Typed `Config` from `raphp.json` plus environment (strict `ConfigLoader`), UTC PSR-20 `SystemClock`, Monolog PSR-3 logger with an enum `LogLevel` and the PSR-20 clock, PHP-DI container (`ContainerFactory`). **Attacked and fixed:** a PCRE `$` trailing-newline hole, weak path checks, `null` read as absent, unbounded pool, a crash on a non-string env value, control characters in error output. **Independent review:** 20 findings confirmed, all applied. **Mutation testing:** 60 mutations, 58 killed, 2 equivalent survivors. **Not covered:** the logger's default `php://stderr`; duplicate JSON keys keep the last (R25); no real concurrency test. Needs your approval: D29 |
-| **P1.6** | Error model | ⏳ | |
+| **P1.6** | Error model | ✅ | `make check` exits 0: **415 tests, 810 assertions**, no skips. `ErrorCode` enum (the nine codes of FRAMEWORK 6.6), abstract `RaphpException`, abstract `RpcException` with `wireCode()`, `toWire()` and `fromWire()`, nine final exceptions, and `ApplicationException` for `E_APP_*`. Every code round-trips through its string and through real JSON. **Mutation testing: 56 mutations, all 56 killed.** `InvalidConfig` is now `InvalidConfigException` and extends `RaphpException`. Needs your approval: D32 |
 
 **Phase 1 findings**
 - **F20:** Composer shells out to git to detect the project version, so the mount's "dubious ownership" problem affects Composer too (a warning plus a defaulted version), not only git. Git ignores `safe.directory` in a repository's own config, so the fix is a **global** entry (you already have one for tinypay, comanager and jobAI) or `git -c safe.directory=...` per command. I correct my earlier offer of a "repo-local" entry, which was never possible.
 - **F20 resolved:** you ran the global `safe.directory` command. Git and Composer now work without the workaround, which I confirmed.
 - **F21:** on this mount Composer installs executables as regular proxy files instead of symlinks, and they run. F19's open question is closed.
+- **F30:** `Exception::getCode()` must return an int in PHP, so the string wire code is `wireCode()`.
+- **F31:** PHPStan rejects assertions it can prove statically (an `assertTrue` on something that is always true, or an `instanceof` the type system already decides). Facts like "a module exception is not an IPC error" belong to the type system, not to a runtime test.
 - **F23:** in PCRE `$` also matches just before a trailing newline, so `/^name$/` accepts `"name\n"`. Use `\z`.
 - **F24:** PHP turns digit-only JSON object keys into integer array keys, and `{"0": ...}` decodes to a *list*. Names are therefore required to start with a letter, and the error message explains it.
 - **F25:** Monolog 3.12.1 takes a PSR-20 clock and a timezone in its constructor; without them it stamps records in the process's local timezone and ignores the container's clock.
@@ -94,6 +96,28 @@ Clicks and key presses; a tray icon or menu; how the dialog looks; attaching the
 `axiphy` is free on GitHub, crates.io, npm and Packagist. `deltrix`, `lemnis`, `nablix`, `orthon`, `phasora`, `quadrix`, `sigmora` and `tessar` are free on crates.io, npm and Packagist but their GitHub handles exist. `kernix`, `orbix` and `vectrix` are taken in several places. Every ordinary dictionary word tried (lemma, axiom, vertex, radix, torus and others) was taken on GitHub, npm and crates.io.
 
 ---
+
+## 3B. Phase 2 progress
+
+| Step | What | Status | Result |
+|---|---|---|---|
+| **P2.1** | Kernel: loop bootstrap, signals, shutdown | ✅ | `Raphp\Core\Kernel`. Exit codes: 0 clean, 1 uncaught exception or failed hook, 130 SIGINT, 143 SIGTERM, or the code given to `stop()`; the first reason to stop wins. Shutdown hooks run last-registered first within one shared time budget (default 5 s); a failing hook is logged and the rest still run; a hook that runs out of budget is abandoned and logged. A second signal during shutdown ends the process at once. **11 integration tests** run a real child PHP process (exceptions, SIGINT, SIGTERM, double signal, hook order, hook failure, hook timeout). Repeated 8 times for flakiness: stable. The double-signal case was also run by hand: exit 130, only `READY` on stdout |
+| **P2.2** | Supervised background task runner | ✅ | `Raphp\Async\BackgroundTasks`: `run()`, `count()`, `awaitAll()`, `cancelAll()`. A failing task is logged at error level with its name and exception, never raises `UnhandledFutureError`, and the loop keeps running; a cancelled task is logged at debug. **12 tests**, including a check that no future ever goes unhandled. Amp starts a task on the next tick, not inside `run()`, so `count()` right after `run()` is already 1 (a first version of the docs and tests assumed otherwise; corrected) |
+| **P2.3** | NDJSON codec | ✅ | `Raphp\Ipc\Codec\{Codec, Decoder, JsonLineCodec, JsonLineDecoder}`. Encoder: compact, no raw newline, ASCII only (non-ASCII as `\uXXXX`), slashes unescaped, `[]` becomes `{}`, a list is refused. Decoder: pull-based (`feed`, `next`, `finish`, `isDead`), reads in linear time, a bad line gives an `E_PROTOCOL` item and decoding **continues**, an oversize line (complete, or an unfinished one past the limit) gives one `E_PAYLOAD_TOO_LARGE` and the decoder then **stops and discards input** (memory stays bounded). **Golden files** in `docs/protocol/golden/` (all eight message kinds plus malformed cases) pinned byte for byte and read back whole and byte by byte. Tests cover every possible split point, one byte at a time, 40 random chunkings, oversize, invalid UTF-8, invalid JSON. **Mutation testing: 29 mutations, 26 killed; 3 survivors are equivalent** (an unreachable defensive `is_array` guard and two compaction changes that affect speed, not results). It found two real gaps (a wrong rejection of `{"0":"a"}`, which PHP decodes to a list but which is a valid JSON object, and no test for a partial line pending across buffer compaction); both fixed and tested. Needs your approval: D33 (and D34 for P2.1) |
+
+| **P2.4** | Message types | ✅ | `Raphp\Ipc\Message\`: `Kind` enum (`req`, `res`, `evt`, `cancel`, `hello`, `bye`, `ping`, `pong`), an `Envelope` interface, and eight final readonly messages (`Request`, `Response` with `success()` and `failure()`, `Event`, `Cancel`, `Hello`, `Bye`, `Ping`, `Pong`). `EnvelopeReader` turns a decoded line into a typed message or throws `ProtocolException` (`E_PROTOCOL`). **Split of duties:** the reader checks field *types* (a float, string, bool or `null` where an integer belongs is refused; `null` params are refused); the message constructors check *values* (positive ids, non-empty names, params not a list) and the reader passes their complaint on. Extra keys are ignored (a newer peer may add fields). A response needs exactly one of `result` or `error`. Untrusted text in an error message is quoted, shortened to 32 bytes and free of control characters. **98 new tests**, including: every golden message reads into the right type and **writes back to the golden bytes**; about 70 refused-message cases, each checked for its reason. **Mutation testing: 55 mutations, all 55 killed** (one survivor exposed a weak test; strengthened). Needs your approval: D35 |
+
+| **P2.5** | Transport and stream transport | ✅ | `Raphp\Ipc\Transport\{Transport, StreamTransport}`. A transport moves bytes (the codec frames them). Over an in-process socket pair, **31 tests** show: ordered delivery; both directions at once; a 16 MiB write that waits for a slow reader while the loop keeps ticking (a ticker fired more than 5 times in 150 ms) and arrives intact (MD5); half-close; close with a read or a write waiting (read ends with `null`, write fails with `ClosedException`, no loop errors); 50 close cycles with pending reads leave no stray descriptors; a waiting read can be cancelled; two fibers writing at once never interleave their bytes. `close()` frees the descriptor at once (the watchers are cancelled first, F5). **Two findings shaped the code (F38, F39).** Mutation testing: see the results line below. Needs your approval: D36 |
+
+**Phase 2 findings**
+- **F38 (measured):** an AF_UNIX stream socket accepts only about **278 small writes** (any size up to roughly 700 bytes) before the next write has to wait for the reader; 100-byte writes stop after 27.8 KB, 10 KB writes after about 170 KB. Back-pressure therefore starts after a few hundred small messages, not after 200 KB. My own test deadlocked on this (2,000 small writes and a reader in the same fiber). **P2.6 must design the sending path for it.**
+- **F39 (read from source, then reproduced):** in amphp/byte-stream 2.1.3 `WritableStream::end()` does not wait for queued writes, although its documentation says it does. Once the stream is no longer writable the write watcher fails the remaining queued chunks with `ClosedException`. A `bye` followed by `end()` could lose the tail of a message. `StreamTransport::end()` therefore counts writes in flight and waits for them before ending the stream.
+- **F36:** the first draft of the protocol example in FRAMEWORK 6.4 gave a progress `evt` an `id` equal to its `ref`. An event is never answered, so it has no use for an id. I removed it from the spec and from the golden files (the Rust side does not exist yet, so nothing else depended on it).
+- **F37:** after `json_decode(..., true)` a JSON array and an object with digit keys both look like a PHP list, so a `params` list cannot be told from an object that way. `params` therefore must be an object with named keys, and a non-empty list is refused (same cause as F24 and F32).
+- **F32:** PHP decodes a JSON object whose keys are `"0"`, `"1"`, ... to a *list* (same cause as F24). The decoder therefore cannot use "is it a list?" to tell objects from arrays. A line that starts with `{` and parses is an object, and the envelope layer (P2.4) must judge its keys.
+- **F33:** `json_decode` reports invalid UTF-8 as `JSON_ERROR_UTF8`, so the decoder can say "invalid UTF-8" instead of a generic JSON error.
+- **F34:** the oversize rule has to cover an *unfinished* line too, otherwise a peer that never sends a newline makes the decoder buffer without end. The decoder gives up once the pending bytes pass the limit, at most one chunk late.
+- **F35:** the test tooling is part of the risk. My first mutation run left a mutated source file behind when the harness crashed on non-UTF-8 test output, and the "baseline" in the copy failed for a stale `vendor/`. I fixed the harness (restore in `finally`, lenient decoding) and verified that the copy equals the repository before trusting any result.
 
 ## 4. Findings
 
@@ -145,13 +169,12 @@ None has a solution yet. Each names the plan step whose acceptance must resolve 
 
 | # | Need | Status |
 |---|---|---|
-| 1 | **Commit and push the P1.5 hardening** (source and test changes since `aa1e919`, plus docs). CI was green on `aa1e919` but has not yet run on the final version. Then I check it with `gh`. I make no commits | **Open** |
-| 2 | **D29 approval:** the manifest and environment rules (strict keys, name patterns, clean paths, the limits of 1 MiB, pool 1 to 256, strings 1024 bytes, 50 problems shown, and the three `RAPHP_*` variables). The limits are my numbers, not measured ones | **Open, needs your approval** |
-| 3 | **The chrome experiment's file dialog:** you accepted the window's look; how the dialog looked and whether it opened over the window is still unreported | **Partly answered** |
-| 4 | **Next step:** P1.6 (error model, `Raphp\Error\*` and an `ErrorCode` enum) is the last step of Phase 1. Shall I continue? | **Open** |
-| 5 | Packagist vendor `raphp`: availability unchecked (Packagist timed out). Check when you are ready to publish | Later |
+| 1 | **Checkpoint 1 review.** You told me to continue to Phase 2, so I treat the Phase 1 review as passed. Say so if you want changes | **Answered by "continue the next phase"** |
+| 2 | **Commit and push my work since `aa1e919`** (P1.5 hardening, P1.6, chrome decision, P2.1 to P2.3, docs). CI has not run on any of it. I make no commits | **Open** |
+| 3 | **Approve or change D29** (manifest and environment rules and limits), **D32** (the error model, especially the rule that an unknown error code becomes `InternalErrorException`), **D33** (codec contract, especially that an oversize line is fatal for the connection), **D34** (kernel exit codes and the 5 s shutdown budget) **and D35** (message rules, especially that extra keys are ignored and an `evt` has no `id`) | **Open, need your approval** |
+| 4 | Packagist vendor `raphp`: availability unchecked (Packagist timed out). Check when you are ready to publish | Later |
 
-Already answered: PHP 8.5 or newer, PHP-DI, PHP-CS-Fixer, copyright holder Codizium, public name Raphp, rename now (done, D28), `rlm`, GitHub, global `safe.directory`, D21 approved, the window's look, commits are yours.
+Already answered: PHP 8.5 or newer, PHP-DI, PHP-CS-Fixer, copyright holder Codizium, public name Raphp, rename now (done), `rlm`, GitHub, global `safe.directory`, D21 approved, **the native chrome accepted without reservation (D31)**, commits are yours.
 
 ---
 
@@ -167,6 +190,9 @@ The authoritative log is `FRAMEWORK.md` section 15. In summary:
 - **Quality:** PER-CS, PHPStan strict, PHPUnit. The formatter is PHP-CS-Fixer (D25).
 - **License:** MIT, semantic versioning.
 - **Naming:** the public name is **Raphp** (D27). The project was renamed from the code name `niphy` on 2026-11-06 (D28). Nothing is published.
+- **Chrome (D31, decided):** the native chrome from the chrome experiment is accepted without reservation and built in P3.6 and P3.12.
+- **P1.6 (D32, proposed):** the error model.
+- **P2.1, P2.3, P2.4 and P2.5 (D34, D33, D35, D36, proposed):** the kernel's exit codes and shutdown budget; the codec and decoder contract; the message validation rules; the transport contract.
 - **P1.5 (D29, D30, proposed):** manifest and environment rules with limits; the log level is an enum and the logger uses the PSR-20 clock in UTC.
 - **Phase 1 tooling (D23 to D26):** PHP 8.5 or newer, PHP-DI 7, PHP-CS-Fixer with `@PER-CS3.0`, copyright holder Codizium.
 - **Errors:** master logs and shuts down non-zero; worker exits non-zero and is restarted.
@@ -180,7 +206,7 @@ The authoritative log is `FRAMEWORK.md` section 15. In summary:
 
 **Project documents** (`docs/`): `FRAMEWORK.md`, `IMPLEMENTATION_PLAN.md`, `PROGRESS.md`, `SPIKE_REPORT.md`
 
-**Repository root (Phase 1):** `LICENSE`, `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `.editorconfig`, `.gitignore`, `composer.json` (the author is your own name, edited by you), `composer.lock`, `Makefile`, `phpstan.neon`, `.php-cs-fixer.php`, `phpunit.xml`, `php/tests/EnvironmentTest.php`, `shim/rustfmt.toml`, `shim/clippy.toml`, placeholders in `php/src`, `php/tests`, `shim`, `rlm`, `examples`, and from P1.4 `.github/workflows/ci.yml`. **P1.5 adds** under `php/src/Core`: `Config/` (8 classes), `Logging/` (`LogLevel`, `LoggerFactory`, `LineLogFormatter`), `Clock/SystemClock`, `Container/ContainerFactory`; and under `php/tests`: `Core/Config/ConfigLoaderTest`, `Core/Logging/{LogLevelTest, LoggerFactoryTest}`, `Core/Clock/SystemClockTest`, `Core/Container/ContainerFactoryTest`, `Support/{ConfigFixture, FrozenClock, NeedsLoggerAndClock}`. **Committed:** everything up to P1.3 (`initial commit` `83c8a97`), the rename and CI (`f221905`), and the first version of P1.5 (`aa1e919`), all pushed to `ralphxp/raphp`. **Not committed:** my P1.5 hardening (source and tests), the new `LogLevel` and `LineLogFormatter` classes, and the doc updates since `aa1e919`.
+**Repository root (Phase 1):** `LICENSE`, `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `.editorconfig`, `.gitignore`, `composer.json` (the author is your own name, edited by you), `composer.lock`, `Makefile`, `phpstan.neon`, `.php-cs-fixer.php`, `phpunit.xml`, `php/tests/EnvironmentTest.php`, `shim/rustfmt.toml`, `shim/clippy.toml`, placeholders in `php/src`, `php/tests`, `shim`, `rlm`, `examples`, and from P1.4 `.github/workflows/ci.yml`. **P1.5 adds** under `php/src/Core`: `Config/` (8 classes), `Logging/` (`LogLevel`, `LoggerFactory`, `LineLogFormatter`), `Clock/SystemClock`, `Container/ContainerFactory`; and under `php/tests`: `Core/Config/ConfigLoaderTest`, `Core/Logging/{LogLevelTest, LoggerFactoryTest}`, `Core/Clock/SystemClockTest`, `Core/Container/ContainerFactoryTest`, `Support/{ConfigFixture, FrozenClock, NeedsLoggerAndClock}`. **P1.6 adds** `php/src/Error` (`ErrorCode`, `RaphpException`, `RpcException`, `ApplicationException` and nine `*Exception` classes, one per code) and `php/tests/Error/{ErrorCodeTest, RpcExceptionTest, HierarchyTest}`; `InvalidConfig` was renamed `InvalidConfigException`. **Committed:** everything up to P1.3 (`initial commit` `83c8a97`), the rename and CI (`f221905`), and the first version of P1.5 (`aa1e919`), all pushed to `ralphxp/raphp`. **Not committed:** my P1.5 hardening (source and tests), the new `LogLevel` and `LineLogFormatter` classes, and the doc updates since `aa1e919`.
 
 **Throwaway spikes** (`spikes/`, about 1.8 GB in total, most of it `04-static-php/work` at 1.4 GB and `shim-win/target` at 318 MB; both must be ignored by git):
 - `01-shim-roundtrip/`: Rust shim stage A (`shim/`), windowed shim with file dialog (`shim-win/`), `spike01.php`, `spike01b.php`, `hold.php`, `chrome.php`
@@ -191,7 +217,9 @@ The authoritative log is `FRAMEWORK.md` section 15. In summary:
 
 **Outside the project:** the early planning file `~/.claude/plans/before-we-continue-this-twinkling-plum.md` (superseded), backups of the docs and workflow scratch files under the session scratchpad, and `perl` / `re2c` installed on your system.
 
-**Not created yet:** any production source, the shim crate, the `rlm` CLI.
+**Phase 2 adds** under `php/src`: `Core/Kernel`, `Async/BackgroundTasks`, `Ipc/Codec/{Codec, Decoder, JsonLineCodec, JsonLineDecoder}`, `Ipc/Message/{Kind, Envelope, Validation, EnvelopeReader, Request, Response, Event, Cancel, Hello, Bye, Ping, Pong}`, `Ipc/Transport/{Transport, StreamTransport}`; under `php/tests`: `Core/KernelTest`, `Async/BackgroundTasksTest`, `Ipc/Codec/{JsonLineCodecTest, JsonLineDecoderTest, GoldenFilesTest}`, `Ipc/Message/{MessagesTest, EnvelopeReaderTest}`, `Ipc/Transport/StreamTransportTest`, `Support/Recorder`, `Fixtures/kernel.php`, `Support/{ChildProcess, ChildResult}`; and `docs/protocol/golden/{messages.ndjson, messages.json, malformed.json, README.md}`. `composer.json` now requires `amphp/amp`, `amphp/byte-stream`, `revolt/event-loop`, `php-di/php-di`, `monolog/monolog` and the PSR interfaces.
+
+**Not created yet:** the shim crate, the `rlm` CLI, and everything in Phase 2 from P2.6 on.
 
 ---
 
@@ -243,3 +271,12 @@ The authoritative log is `FRAMEWORK.md` section 15. In summary:
 - Ran an independent adversarial review of P1.5 (three lenses, two skeptics per finding, 59 agents): 20 confirmed, 8 rejected. Applied all 20, including turning the log level into an enum and recording the PHP-DI Fiber limit as R24.
 - Ran my own mutation test: 60 mutations, 4 survived, I added tests for the two real gaps, then 58 of 58 non-equivalent mutants were killed. Docs updated (FRAMEWORK 9.2, 4.9, D29, D30, R24, R25; plan; changelog).
 - You committed the first version of P1.5 as `aa1e919` and pushed it; CI ran green (21 s). I had wrongly said it was all uncommitted; corrected here.
+- You said the chrome experience was "great in human terms" and to implement it with no doubts. Recorded as D31: the look is settled, and the remaining checks (tray, dialog parenting, responsiveness) are implementation work, not doubts.
+- P1.6 built: the error model (`ErrorCode`, `RaphpException`, `RpcException`, nine exceptions, `ApplicationException`) with wire conversion. PHPStan rejected two of my tautological tests and I replaced them. Mutation test: 56 of 56 killed.
+- Checkpoint 1 check: a clean copy of the tree (no `vendor/`, no caches) installed from `composer.lock` and passed `make check` (415 tests). Phase 1 finished.
+- You said "continue the next phase". Phase 2 started.
+- P2.1 built and tested against a real child process (11 tests, repeated 8 times, plus a manual double-signal run).
+- P2.2 built (12 tests). Found that Amp starts a task on the next tick; corrected my first assumption in the code, tests and docs.
+- P2.3 built: codec, decoder, golden files, 520 tests overall. Mutation testing found two real gaps (digit-keyed objects wrongly rejected; no test for a partial line across buffer compaction); fixed, and 26 of 29 mutants are now killed with 3 equivalent survivors. My mutation harness first crashed and left a mutated file behind; fixed and verified the copy matches the repository.
+- P2.4 built: message types and the reader, tested against the golden files (read, then write back byte for byte). Found and fixed a mistake in my own spec example (an `id` on a progress event). Mutation test: 55 of 55 killed after strengthening one test.
+- P2.5 built: the transport. Two of my tests deadlocked before I understood why: an AF_UNIX socket takes only about 280 small writes before a write waits (F38), and Amp's `end()` loses queued writes (F39). Fixed the tests, and wrote an `end()` that waits.

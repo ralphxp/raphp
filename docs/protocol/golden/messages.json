@@ -1,0 +1,75 @@
+[
+    {
+        "kind": "hello",
+        "proto": 1,
+        "role": "worker",
+        "name": "main",
+        "pid": 4242,
+        "caps": []
+    },
+    {
+        "id": 17,
+        "kind": "req",
+        "method": "files.scan",
+        "params": {
+            "path": "/tmp/some dir"
+        }
+    },
+    {
+        "kind": "evt",
+        "ref": 17,
+        "method": "progress",
+        "params": {
+            "done": 40,
+            "total": 100
+        }
+    },
+    {
+        "id": 17,
+        "kind": "res",
+        "result": {
+            "count": 100,
+            "ratio": 0.5,
+            "ok": true,
+            "next": null
+        }
+    },
+    {
+        "id": 18,
+        "kind": "res",
+        "error": {
+            "code": "E_CANCELLED",
+            "message": "cancelled by the caller",
+            "data": null
+        }
+    },
+    {
+        "kind": "cancel",
+        "ref": 17
+    },
+    {
+        "kind": "evt",
+        "method": "app.theme_changed",
+        "params": {
+            "dark": true
+        }
+    },
+    {
+        "id": 19,
+        "kind": "req",
+        "method": "text.echo",
+        "params": {
+            "text": "café €5 😀\nsecond line\ttab \"quoted\" back\\slash"
+        }
+    },
+    {
+        "kind": "ping"
+    },
+    {
+        "kind": "pong"
+    },
+    {
+        "kind": "bye",
+        "reason": "shutdown"
+    }
+]

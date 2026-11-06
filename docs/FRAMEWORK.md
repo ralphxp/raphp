@@ -148,14 +148,16 @@ Raphp exposes its own namespaced services (`Raphp\Filesystem`, `Raphp\Network`, 
 - **No fluent cascading.** Configuration uses constructors with named arguments and immutable value objects, not long method chains. **[Decided]**
 - **Async.** Operations suspend the current Fiber and return the value, as in Amp v3. Parallelism is explicit (Amp's `async()`, `await()`, `Future\awaitAll()`). No promise chaining. **[Decided, O10]**
 - Cancellation uses Amp's `Cancellation` objects, accepted as an optional trailing argument.
-- Errors are typed exceptions under `Raphp\Error\*`. IPC errors map to the codes in 6.6.
+- Errors are typed exceptions. The abstract base `Raphp\Error\RaphpException` and the IPC errors (`RpcException` and its subclasses) live in `Raphp\Error\*`. A module's own exceptions live in the module's namespace and extend `RaphpException` (for example `Raphp\Core\Config\InvalidConfigException`). IPC errors map to the codes in 6.6. **[Proposed, D32]**
 - Streams use Amp's readable and writable stream interfaces.
 
 ### 4.4 Heavy work
 Async only helps with I/O waits. CPU-bound work goes to a worker process pool (`amphp/parallel`). It must never run inside a UI handler or on the master loop. **[Proposed]** **[Unverified]**: whether `amphp/parallel` pool children get parent-death protection (5.6). Check before relying on it.
 
 ### 4.5 Signals and shutdown
-SIGINT and SIGTERM are handled through Revolt, which needs `pcntl` (without it, registering a signal handler throws `UnsupportedFeatureException`). `posix` is needed by `amphp/process`, which calls `posix_kill` to signal child processes, and by the worker orphan check (5.6). **[Source-checked: the Revolt and amphp/process sources were read, not run in a spike.]** Both are present on the dev machine and are in the required-extension list (9.2). The master starts graceful shutdown (5.5) and exits with a defined code. A worker's SIGTERM handling must end the process (5.6). The shim's own exit and UI-thread failure are not yet part of this sequence (R14). **[Proposed]**
+SIGINT and SIGTERM are handled through Revolt, which needs `pcntl` (without it, registering a signal handler throws `UnsupportedFeatureException`). `posix` is needed by `amphp/process`, which calls `posix_kill` to signal child processes, and by the worker orphan check (5.6). **[Source-checked: the Revolt and amphp/process sources were read, not run in a spike.]** Both are present on the dev machine and are in the required-extension list (9.2). The master starts graceful shutdown (5.5) and exits with a defined code. **[Implemented, P2.1]** `Raphp\Core\Kernel` is the same for master and worker: exit 0 when the application's `main` returns or `stop(0)` is called, 1 after an uncaught exception or a failed shutdown hook, 130 after SIGINT and 143 after SIGTERM (128 plus the signal), or the code passed to `stop()`; the first reason to stop wins. Shutdown hooks run one at a time, last registered first, within one shared time budget (default 5 s). A hook that fails is logged and the rest still run; a hook that runs out of budget is abandoned and logged; either makes an otherwise clean exit non-zero. A second SIGINT or SIGTERM during shutdown ends the process at once with that signal's code. A worker's SIGTERM handling must end the process (5.6). The shim's own exit and UI-thread failure are not yet part of this sequence (R14). **[Proposed]**
+
+**Background tasks [Implemented, P2.2].** `Raphp\Async\BackgroundTasks` runs fire-and-forget work. A failure is logged at error level with the task's name and exception; it never reaches Amp's unhandled-future error and never stops the loop. A task ended by `cancelAll()` is logged at debug level. A task starts on the next loop tick, not inside `run()`.
 
 ### 4.6 Long-running memory
 PHP leaks and fragmentation matter once a process runs for days. Workers can be recycled after N requests or M megabytes (configurable), with in-flight work drained first. **[Proposed]**
@@ -241,7 +243,9 @@ The example measures elapsed time with monotonic `hrtime(true)` instead of the P
 Rules:
 - Requests and responses are **immutable** value objects with `with*()` methods.
 - Execution order is registration order, forming an onion. A middleware may short-circuit by returning without calling `$next`.
-- Because middleware runs inside Fibers, it can wait on I/O and look entirely sequential. Fibers are what remove the need for promise-returning middleware.
+- **[Implemented, P2.6]** `Raphp\Rpc\{RpcMiddleware, RpcHandler, RpcRequest, RpcResponse, MiddlewareStack}` follow the contract above. A peer has two stacks: the **inbound** one wraps the handler that answers the other side's requests, the **outbound** one wraps the code that puts a call on the wire. `RpcRequest` is immutable with `withParams()`, `withTrace()` and `withTimeout()`; some fields belong to one side (`timeout` and `onProgress` to the caller, `progress` to the callee). The end of a chain returns an `RpcResponse` (a success or a failure) for remote **and** local outcomes alike, so middleware sees one kind of result; a handler's exceptions pass through as exceptions. Built in: `TimingMiddleware` (monotonic clock, logs method, trace, milliseconds and outcome), `TraceIdMiddleware` (gives an outgoing call a random trace id), `ErrorMappingMiddleware` (maps chosen exception classes to framework error codes). `HandlerRegistry` maps method names to closures and is itself the final handler.
+
+Because middleware runs inside Fibers, it can wait on I/O and look entirely sequential. Fibers are what remove the need for promise-returning middleware.
 - Built-in middleware (all optional): timing and logging, trace id propagation, error mapping to the `E_*` codes (6.6), validation, and a retry middleware that applies only to methods marked idempotent through an attribute.
 - Stacks are assembled at boot from the PSR-11 container.
 - Middleware wraps flow. **Notifications** that must not alter flow use PSR-14 events (4.9).
@@ -319,6 +323,14 @@ A worker exits when its IPC socket reaches EOF. In addition, at startup it calls
 ### 6.1 Transport interface
 A `Transport` interface hides the mechanism so Windows named pipes can be added later without touching protocol code. The only MVP implementation is AF_UNIX stream sockets. **[Decided]**
 
+**Contract [Implemented, P2.5: `Raphp\Ipc\Transport\Transport`, `StreamTransport`].** A transport moves bytes, not messages (framing is the codec's job, 6.3).
+- `read()` waits for the next chunk and returns `null` at end of input (the peer finished sending, or this side closed). Only one read may wait at a time. A waiting read can be cancelled.
+- `write()` waits until all the bytes are handed to the operating system, so a fast sender cannot pile up data nobody has taken (back-pressure). Several fibers may write at once; writes stay in order and each call's bytes stay together. It fails with `ClosedException` (a `StreamException`) when this side was ended or closed or the peer is gone.
+- `end()` says nothing more will be written. It **waits for the writes still pending**, then the peer sees end of input; a write started after `end()` fails. This side can still read. Amp's own `end()` does not wait (it fails the queued writes, F39), so `StreamTransport` does the waiting itself.
+- `close()` closes both directions at once, fails pending writes, ends a pending read with `null`, and frees the descriptor immediately. The event-loop watchers are cancelled before the descriptor is released (F5), so a read that is waiting never meets a closed stream. Closing twice is harmless.
+- `isClosed()` is true once both directions are finished. `onClose()` runs its callback once, when that happens.
+- The owner closes the transport when `read()` returns `null`.
+
 ### 6.2 Connection establishment **[Decided, O1; changes the earlier plan]**
 The earlier plan used a path-based socket plus a random token handshake. A simpler and stronger alternative:
 
@@ -329,15 +341,18 @@ The earlier plan used a path-based socket plus a random token handshake. A simpl
 
 ### 6.3 Framing
 - **NDJSON:** one JSON object per line, terminated by `\n`. JSON string escaping guarantees no raw newline inside a message. **[Decided]**
-- Encoders must not pretty-print. UTF-8 only.
-- Maximum line size is configurable (default 8 MiB). Larger fails with `E_PAYLOAD_TOO_LARGE`. Bulk binary data does not belong here (6.9).
+- Encoders must not pretty-print. UTF-8 only. The PHP encoder writes non-ASCII as `\uXXXX` and leaves slashes alone, so every line is plain ASCII. A message is always an object: an empty one is `{}`, never `[]`.
+- Maximum line size is configurable (default 8 MiB, counted without the newline; a line of exactly the limit is accepted). Larger fails with `E_PAYLOAD_TOO_LARGE`. Bulk binary data does not belong here (6.9).
+- **Decoder contract [Implemented, P2.3].** Input arrives in chunks cut anywhere, and the result must not depend on where. A bad line (empty, not starting with `{`, invalid JSON, invalid UTF-8, nesting deeper than 64) is an `E_PROTOCOL` problem for that line only, and decoding **continues** with the next line. A line over the limit, complete or still unfinished, is an `E_PAYLOAD_TOO_LARGE` problem, reported once, after which the decoder **stops and discards all further input**: it cannot find the next message boundary safely, and an unfinished line must not be buffered without end. The owner of the connection closes it. Input that ends in the middle of a message is an `E_PROTOCOL` problem at end of input. The decoder is pull-based (`feed`, `next`, `finish`) so the transport decides when to read.
+- **Golden files [Implemented, P2.3].** `docs/protocol/golden/` holds one message of every kind (the PHP encoder must reproduce it byte for byte) and the malformed cases with the exact outcome a decoder must give. The Rust shim's tests will read the same files.
+- A JSON object whose keys are `"0"`, `"1"`, ... decodes to a list in PHP (F24, F32). It is still an object on the wire; the envelope layer (6.4) rejects it for lacking the required fields.
 - A `Codec` interface permits another format later (MessagePack is available as an extension on the dev machine). JSON stays the MVP format. **[Proposed]**
 
 ### 6.4 Envelope
 
 ```jsonc
-{ "id": 17, "kind": "req", "method": "files.scan", "params": {"path": "/tmp"} }
-{ "id": 17, "kind": "evt", "ref": 17, "method": "progress", "params": {"done": 40, "total": 100} }
+{ "id": 17, "kind": "req", "method": "files.scan", "params": {"path": "/tmp"}, "trace": "9f2c4a1b7d3e5f60" }
+{ "kind": "evt", "ref": 17, "method": "progress", "params": {"done": 40, "total": 100} }
 { "id": 17, "kind": "res", "result": {"count": 100} }
 { "id": 17, "kind": "res", "error": {"code": "E_CANCELLED", "message": "...", "data": null} }
 { "kind": "cancel", "ref": 17 }
@@ -348,10 +363,19 @@ The earlier plan used a path-based socket plus a random token handshake. A simpl
 ```
 
 Rules:
-- `id` is assigned by the sender, unique per connection direction. Either side may issue requests.
+- `id` belongs to requests and their responses: the sender assigns it, a positive integer, unique per connection direction. Either side may issue requests. An `evt` has no `id`, because nothing ever answers it. *(Fixed in P2.4: the first draft of the example gave a progress `evt` an `id`.)*
 - A request produces zero or more `evt` messages with `ref = id` (progress or streaming), then exactly one `res`.
 - Messages are ordered per connection. Requests run concurrently, so responses may arrive out of order.
 - Unknown `kind` or malformed JSON: reply `E_PROTOCOL` where possible, then close.
+
+**Reading rules [Implemented, P2.4].** `Raphp\Ipc\Message\EnvelopeReader` turns a decoded line into a typed message or refuses it with `E_PROTOCOL`:
+- `kind` must be one of `req`, `res`, `evt`, `cancel`, `hello`, `bye`, `ping`, `pong`, exactly, in lower case.
+- Required fields: `req` needs `id` and `method`; `res` needs `id` and exactly one of `result` or `error` (an `error` that is `null` counts as absent, and a non-null `error` next to a non-null `result` is refused); `evt` needs `method`; `cancel` needs `ref`; `hello` needs `proto`, `role`, `name`, `pid`. Optional: `params` (default `{}`), `ref` on `evt`, `caps` (default `[]`) and `reason` (default `""`).
+- `req` may carry an optional `trace`: an id that follows one operation across processes so log lines on both sides can be matched. It is 1 to 64 characters from `A-Z a-z 0-9 _ . -` (it ends up in logs). *(Added in P2.6.)*
+- Types are exact: an integer field must be an integer (not `1.0`, `"1"` or `true`), and `null` is never accepted as "absent" for a field that is present.
+- Values: `id`, `ref`, `proto` and `pid` are positive integers; `method`, `role` and `name` are not empty; `params` is an object with named keys, so a list is refused (F37).
+- Extra keys are ignored, so a newer peer can add fields.
+- An `error` object is rebuilt with the rules of 6.6, so an unknown code becomes `E_INTERNAL`.
 
 ### 6.5 Handshake and versioning
 Both sides send `hello` immediately after connecting. `proto` is an integer. A mismatch is answered with `bye` and `E_PROTOCOL`. `caps` is a list of optional feature names (for example `"shm"` for the shared-memory lane). Breaking changes bump `proto`.
@@ -359,11 +383,42 @@ Both sides send `hello` immediately after connecting. `proto` is an integer. A m
 ### 6.6 Error codes
 `E_METHOD_NOT_FOUND`, `E_INVALID_PARAMS`, `E_CANCELLED`, `E_TIMEOUT`, `E_WORKER_CRASHED`, `E_WORKER_UNAVAILABLE`, `E_PAYLOAD_TOO_LARGE`, `E_PROTOCOL`, `E_INTERNAL`. Application errors use `E_APP_*` with free-form `data`.
 
+**In code** **[Proposed, D32, implemented and tested in P1.6]**
+
+| Wire code | Exception (all in `Raphp\Error`) |
+|---|---|
+| `E_METHOD_NOT_FOUND` | `MethodNotFoundException` |
+| `E_INVALID_PARAMS` | `InvalidParamsException` |
+| `E_CANCELLED` | `RequestCancelledException` |
+| `E_TIMEOUT` | `RequestTimeoutException` |
+| `E_WORKER_CRASHED` | `WorkerCrashedException` |
+| `E_WORKER_UNAVAILABLE` | `WorkerUnavailableException` |
+| `E_PAYLOAD_TOO_LARGE` | `PayloadTooLargeException` |
+| `E_PROTOCOL` | `ProtocolException` |
+| `E_INTERNAL` | `InternalErrorException` |
+| `E_APP_[A-Z0-9_]+` | `ApplicationException` (the code is chosen by the application, `data` is free-form) |
+
+- `ErrorCode` is a string-backed enum of the nine framework codes. `RaphpException` is the abstract base of every exception the framework throws on purpose. `RpcException` extends it for errors that travel between processes. A module's own exceptions, such as `InvalidConfigException`, extend `RaphpException` but are never sent over IPC.
+- The string code is `wireCode()`, not `getCode()`, because PHP requires `getCode()` to return an int.
+- `toWire()` gives `{code, message, data}`, and `RpcException::fromWire()` rebuilds the right subclass. The stack trace and the previous exception do not cross the wire.
+- A code that is neither a framework code nor a well-formed `E_APP_*` code (a newer peer, say) becomes an `InternalErrorException`. Its `data` keeps the original code, message and data, and its own message does not echo the code. **[Proposed]**
+- A malformed error object (no string `code` or `message`) becomes a `ProtocolException`. Extra keys are ignored, so a newer peer can add fields.
+
+**The RPC peer [Implemented, P2.6: `Raphp\Rpc\RpcPeer`].** Both ends of a connection are the same class, so either may call the other.
+- **Two fibers, one rule.** One fiber reads and decodes; another writes from a bounded outbound queue (default 256 messages). The reader **never waits on a write**: it only queues what it must send (a `pong`, a `cancel`), so two peers that both send a lot cannot block each other (F38). A sender other than the reader waits when the queue is full (back-pressure).
+- **Calls.** Ids count up from 1 on each connection. At most `maxInFlight` calls (default 64) are out at once; more wait in line, up to `maxQueuedCalls` (default 1024); a call beyond that fails at once with `E_WORKER_UNAVAILABLE`. Answers may come back in any order. A call may carry a timeout, a cancellation and a progress callback. The callback runs on the reader fiber, so it must be quick.
+- **Timeout and cancel.** The caller fails locally (`E_TIMEOUT` or `E_CANCELLED`) and a `cancel` message goes out. The call keeps its slot until the other side answers (or the connection closes), so calls given up on stay bounded by the in-flight limit. The late answer is dropped without a log line.
+- **Answering.** Each request runs in its own fiber through the inbound middleware to the handler; at most `maxInbound` (default 256) at once, one more is answered `E_WORKER_UNAVAILABLE`. A handler's `RpcException` keeps its code; cancellation becomes `E_CANCELLED`; anything else becomes `E_INTERNAL` with the fixed message `internal error` (the exception is logged here, never sent). A result that cannot be encoded becomes `E_INTERNAL`, one over the size limit becomes `E_PAYLOAD_TOO_LARGE`, so the caller is never left waiting. A request with an id already in use is a protocol violation.
+- **When the connection ends.** Calls still waiting fail with `E_WORKER_CRASHED` if the other side vanished without `bye` (end of input or a read or write error), with `E_WORKER_UNAVAILABLE` after a local `close()` or a received `bye`, and with the offending error after a protocol violation. Requests being handled are cancelled. Calls made afterwards fail with `E_WORKER_UNAVAILABLE`.
+- **Protocol violations.** A line that is not a valid message, an oversize line or a duplicate request id closes the connection. **Nothing is written back first**: this is narrower than "reply `E_PROTOCOL` where possible" above, because without an id there is nothing to reply to, and a `bye` that is sure to be flushed needs the graceful shutdown of P2.7.
+- **Not here yet.** `hello`, `pong` and the version check are only handed to a callback (P2.7); no heartbeat (P2.7); no `#[RpcMethod]` registration (P2.8).
+
 ### 6.7 Cancellation and timeouts
 `cancel` is cooperative: the receiver trips the Amp `Cancellation` passed to the handler, and answers `E_CANCELLED` if the handler stops. Client-side timeouts send `cancel` and fail locally with `E_TIMEOUT`. A handler that ignores cancellation is the handler's bug, not a protocol failure.
 
 ### 6.8 Liveness and backpressure
 - **Liveness:** EOF is the primary death signal. `ping` every 2 s, three misses means dead (configurable). A worker busy with CPU work on its loop misses pings, so CPU work must be offloaded (4.4), and the threshold must be tunable.
+- **How early back-pressure starts [Measured, F38].** An AF_UNIX stream socket accepts only about 280 small writes (anything up to about 700 bytes each) before the next write must wait for the reader; larger writes fill the roughly 200 KB buffer after about 200 KB. So a peer that stops reading makes the sender wait after a few hundred small messages, not after 200 KB. The writer of an RPC peer must expect `write()` to wait and must not hold a lock the reader needs.
 - **Backpressure:** each connection has a write-buffer high-water mark. A send returns a future that resolves when flushed. There is a cap on in-flight requests per worker (default to be chosen in Phase 2). Requests beyond it queue, and past a queue limit they fail with `E_WORKER_UNAVAILABLE`.
 - High-rate UI events (mouse move, scroll) are coalesced in the shim (7.5), never in IPC.
 - **[Open, R19]** `ping`, `pong`, `cancel` and normal requests share one ordered stream with lines of up to 8 MiB (6.3). A very large message in flight can delay a `ping` or `cancel` and every unrelated response behind it, and a healthy worker could be declared dead by the liveness rule. The receiver's behavior at the size cap (how an oversize line is discarded without buffering it) is also unspecified. Phase 2 must resolve this and measure ping latency during a large transfer. One tested data point exists: a 16 MiB write to a stalled child worked with a non-blocking writer (6.2), but ping latency during a large transfer was not measured.
@@ -446,7 +501,7 @@ Findings on GNOME 50.5 Wayland **[Verified, P0.4; Decided: option (a), GNOME fir
 
 Not a P0.4 finding **[Unverified]**: Wayland does not let apps position their own windows. This is a general protocol fact that was not tested here.
 
-The GTK4 window path (b) is not pursued. **[Decided]** **[Verified, chrome experiment]** A real portal file dialog requested from PHP through the shim (`rfd` 0.17.2, helper thread, not attached to the window) returned the chosen path to PHP as an event, and the title bar's close button produced `close_requested` in PHP. **[Decided]** You accepted the look of the winit client-side window (title bar, rounded corners, shadows) after seeing it in the chrome experiment. **[Unverified]** The tray, how the dialog looks, whether the dialog attaches to the window, window responsiveness while the dialog is open, and IME were not exercised. Those checks are deferred to plan steps P3.12a to P3.12c (tray, dialog parenting; clipboard is built in P3.11b) and P3.11a (IME).
+The GTK4 window path (b) is not pursued. **[Decided]** **[Verified, chrome experiment]** A real portal file dialog requested from PHP through the shim (`rfd` 0.17.2, helper thread, not attached to the window) returned the chosen path to PHP as an event, and the title bar's close button produced `close_requested` in PHP. **[Decided, D31]** You accepted the native chrome as the chrome experiment showed it (the winit client-side window with its title bar, rounded corners and shadows, and the portal file dialog), without reservation. **[Unverified]** The tray, whether the dialog attaches to the window, window responsiveness while the dialog is open, and IME were not exercised. Those checks are deferred to plan steps P3.12a to P3.12c (tray, dialog parenting; clipboard is built in P3.11b) and P3.11a (IME).
 
 ### 7.8 Headless backend for tests **[Decided, O4]**
 The shim exposes a `headless` backend with no window system dependency. It runs layout and the command/event machinery without drawing to a screen, so CI can test the whole PHP-to-shim path on machines with no display.
@@ -688,6 +743,15 @@ Single file (shim embedded) or a bundle directory (binary plus `lib/`). The size
 | D28 | **Rename done:** code name `niphy` becomes Raphp. Namespace `Raphp\`, `libraphp`, `raphp.json`, `RAPHP_*` variables, C prefix `raphp_`, CLI `nlm` becomes `rlm` (Raphp libs manager), directory `nlm/` becomes `rlm/`, Composer placeholder `raphp/raphp`. Spike code under `spikes/` keeps the old names. | Decided | Owner accepted the lead's recommendation for the rename and for `rlm`. Date: 2026-11-06 |
 | D29 | **Manifest and environment rules** (9.2): strict keys, name patterns, clean relative paths, limits (1 MiB file, worker pool 1 to 256, strings 1024 bytes, 50 problems shown), and the environment overrides `RAPHP_LOG_LEVEL`, `RAPHP_IPC_TRACE` and `RAPHP_UI_ENABLED`. | Proposed (implemented and tested in P1.5, needs your approval) | The limits are guards against accidents and are my numbers, not measured ones |
 | D30 | **The log level is an enum** (`Raphp\Core\Logging\LogLevel`, the eight PSR-3 levels) held by `Config`. The logger writes UTC timestamps and takes its time from the PSR-20 clock. | Proposed (follows 4.3 and the PSR-20 choice) | The P1.5 review found that a string level broke the "enums instead of string constants" rule. Monolog 3.12.1 supports a clock and a timezone natively |
+| D31 | **The native chrome is accepted as the chrome experiment showed it:** a winit client-side window (title bar, rounded corners, shadows), portal file dialogs, and the rest of option (a). The look is settled and is built in P3.6 and P3.12 without a further look review. | Decided (you, 2026-11-06: "great in human terms, implement it with no doubts") | Tray, dialog parenting and window responsiveness during a dialog remain implementation checks. They are not doubts about the look |
+| D32 | **Error model:** an abstract `RaphpException` base; IPC errors are `RpcException` subclasses, one per code in 6.6, plus `ApplicationException` (`E_APP_[A-Z0-9_]+`); the wire code is `wireCode()`; an unknown code becomes `InternalErrorException` (the original is kept in `data`) and a malformed error object becomes `ProtocolException`. | Proposed (implemented and tested in P1.6, needs your approval) | The unknown-code rule is my choice: the design is silent on it. The `Exception` suffix on the class names follows common PHP practice |
+
+| D33 | **Codec contract:** the decoder is pull-based; a bad line is an `E_PROTOCOL` item and decoding continues; an oversize line (complete or unfinished) is fatal, reported once, and the decoder then discards all input; the encoder writes ASCII-only compact lines; shared golden files pin the format for the Rust side. | Proposed (implemented and tested in P2.3, needs your approval) | The fatal-oversize rule is my choice: after an oversize line the next boundary cannot be found safely. A malformed line is recoverable because its end is known |
+| D34 | **Kernel contract:** exit codes 0, 1, 130, 143 or the code given to `stop()`; hooks run last-registered first within one shared budget (default 5 s); a second signal during shutdown ends the process at once. | Proposed (implemented and tested in P2.1, needs your approval) | Follows O12 (log, shut down gracefully, non-zero exit). The 5 s budget and the 128-plus-signal codes are my choices |
+| D35 | **Message rules:** the reading rules under 6.4 (exact kinds, exact types, positive ids, extra keys ignored, a response has exactly one of `result` or `error`) and the spec change that an `evt` has no `id`. | Proposed (implemented and tested in P2.4, needs your approval) | Ignoring extra keys and the positive-id rule are my choices. The `evt` id was a mistake in my first example, not a design decision |
+
+| D36 | **Transport contract:** bytes only; `write()` waits (back-pressure); `end()` waits for pending writes and then refuses new ones; `close()` is immediate, cancels watchers first and frees the descriptor; only one read may wait. | Proposed (implemented and tested in P2.5, needs your approval) | `end()` waiting is my choice: Amp's `end()` loses queued writes (F39). The 64 KiB read chunk is not measured; P2.13 tunes it |
+| D37 | **RPC peer contract:** one reader fiber that never waits on a write, one writer fiber over a bounded queue; limits of 64 calls in flight, 1024 waiting, 256 inbound, 256 queued messages; a given-up call keeps its slot until answered; a protocol violation closes the connection with no reply; handler errors other than `RpcException` become `E_INTERNAL` with a fixed message; `E_WORKER_CRASHED` for a vanished peer, `E_WORKER_UNAVAILABLE` for a local close or `bye`. | Proposed (implemented and tested in P2.6, needs your approval) | The four limits are my numbers, not measured (P2.13). "No reply before closing" is narrower than 6.4 says and is my choice until P2.7 |
 
 The questions table in section 17 is the record for O2, O3, O4, O5 and O7; they have no separate D rows.
 
@@ -698,7 +762,7 @@ The questions table in section 17 is the record for O2, O3, O4, O5 and O7; they 
 | ID | Risk | Likelihood / impact | Mitigation | Status |
 |---|---|---|---|---|
 | R1 | winit loop on a non-main thread misbehaves on Wayland or X11 | Medium / High | Spike P0.1 | **Verified** (Wayland and X11). Caveats: keyboard and click events untested; redraw counts are not a rendering benchmark |
-| R2 | Native menus and tray conflict with a winit window (GTK3 vs GTK4) | Medium / Medium | Spike P0.4 | **Decided: option (a)**, GNOME first (winit window, portal dialogs, in-window menus, optional tray). File dialog verified end to end (unparented); tray, dialog look and parenting deferred to P3.12a to P3.12c (clipboard is built in P3.11b) |
+| R2 | Native menus and tray conflict with a winit window (GTK3 vs GTK4) | Medium / Medium | Spike P0.4 | **Decided: option (a)**, GNOME first (winit window, portal dialogs, in-window menus, optional tray). File dialog verified end to end (unparented); tray and dialog parenting deferred to P3.12a to P3.12c (clipboard is built in P3.11b) |
 | R3 | glibc static PHP + FFI + shim embedding does not work as assumed | Medium / High | Spikes P0.5 and P0.7 | **Verified, with the R23 condition** (shim glibc floor). Windowed shim through `memfd` inside micro is untested |
 | R4 | Self re-exec fails inside micro | Low / High | Spike P0.6 | **Verified** (use `/proc/self/exe`; `PHP_BINARY` is empty) |
 | R5 | FFI callbacks are fragile | n/a | Eliminated by design (no callbacks) | **Mitigated** |
@@ -797,7 +861,7 @@ Detail, commands and raw numbers are in `docs/SPIKE_REPORT.md`. Everything here 
 | P0.1 windowed shim (R1) | **Passes.** winit loop on a non-main thread under Wayland and X11, window created, UI thread kept redrawing while PHP was blocked, pointer events delivered and coalesced. 1000 round trips p50 65 to 114 µs. Keyboard and click events untested. Redraw counts are unthrottled CPU fills. | 7.2, 7.6, R1 |
 | P0.2 socket pair (F1, F2, F4, F5) | Socket pair as fd 3 through `proc_open` works only with `socket_create_pair(AF_UNIX, SOCK_STREAM \| SOCK_CLOEXEC, ...)` plus `socket_export_stream`. `stream_socket_pair` leaks descriptors and the child never sees EOF. A 16 MiB write to a stalled child worked with a non-blocking writer. 2000 round trips p50 about 106 to 265 µs. One worker only. Revolt watchers must be cancelled before a stream is closed. | 5.1, 6.2, D10 |
 | P0.3 parent death (F3) | `prctl(PR_SET_PDEATHSIG, SIGTERM)` via FFI killed the child 5 to 9 ms after a master SIGKILL. Without it (control test) the child was still alive at the end of the 3 s observation window. A `getppid()` guard handles the startup race. | 5.6 |
-| P0.4 native chrome (F6, F7) | GNOME 50.5 Wayland: no server-side decorations, no `xdg_popup` in winit 0.30.13, no `data-control` (use `smithay-clipboard`), no StatusNotifierWatcher unless AppIndicator is enabled, FileChooser portal and text-input v3 available. Option (a) decided. A real portal file dialog and the close button were verified end to end by the chrome experiment (dialog unparented); the tray, look and dialog parenting are not yet exercised (P3.12). | 7.7, R2 |
+| P0.4 native chrome (F6, F7) | GNOME 50.5 Wayland: no server-side decorations, no `xdg_popup` in winit 0.30.13, no `data-control` (use `smithay-clipboard`), no StatusNotifierWatcher unless AppIndicator is enabled, FileChooser portal and text-input v3 available. Option (a) decided. A real portal file dialog and the close button were verified end to end by the chrome experiment (dialog unparented); the look was accepted (D31); the tray and dialog parenting are not yet exercised (P3.12). | 7.7, R2 |
 | P0.5 static PHP (R3) | **Passes with a condition.** static-php-cli 2.8.6, `SPC_TARGET=native-native-gnu.2.17`: PHP 8.5.12 CLI (21.0 MB) and `micro.sfx` (18.9 MB), glibc only, with `ffi`. The condition is R23. | 10.2, R3 |
 | F12, F11 | `ffi.enable=preload` already allows `FFI::cdef` in CLI and micro. In PHP 8.5, use `$ffi->new()`, not the static form. | 10.2, D20 |
 | P0.6 self re-exec (R4) | **Passes.** `PHP_BINARY` is empty in micro. `/proc/self/exe` works. Master re-executed itself as a worker with fd 3. Single-file app 19.5 MB. | 3.4, 10.2, D19, R4 |

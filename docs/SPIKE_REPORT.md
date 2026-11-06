@@ -111,7 +111,7 @@ A second harness bug: closing a stream while Revolt still watched it crashed `st
 | Pointer moves seen | 69 |
 | No `click` or `key` events | nobody clicked inside the window or typed (clicks on the title bar are handled by winit's decorations, not delivered as clicks) |
 
-**Your impression (2026-11-06):** you like how the window looks: rounded corners and shadows. **Not shown by this run:** how the dialog looks, whether the dialog appeared over the window, and whether the window stayed responsive while the dialog was open (not measured). The dialog's file path is a plain host path, which suggests an unsandboxed app.
+**Your impression (2026-11-06):** you liked the experience as a whole, with its rounded corners and shadows ("great in human terms"; decision D31). **Not shown by this run:** whether the dialog appeared over the window, and whether the window stayed responsive while the dialog was open (not measured). The dialog's file path is a plain host path, which suggests an unsandboxed app.
 
 ### P0.5 glibc PHP with FFI (R3)
 
@@ -183,7 +183,7 @@ The shim `.so` stored inside the phar was read, written to `memfd_create`, and l
 ## 5. What was not tested
 
 - Clicks and key presses in the window.
-- A tray icon and a native menu; the dialog's look; attaching the dialog to the window (it was unparented); window responsiveness while the dialog is open.
+- A tray icon and a native menu; attaching the dialog to the window (it was unparented); window responsiveness while the dialog is open.
 - IME and text input (planned for P3.11a).
 - Anything on another distro, another glibc, another architecture, or inside a container (planned for P6.7).
 - More than one worker at a time.

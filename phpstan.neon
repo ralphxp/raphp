@@ -12,6 +12,9 @@ parameters:
   tmpDir: .phpstan.cache
   checkTooWideReturnTypesInProtectedAndPublicMethods: true
   checkUninitializedProperties: true
+  # PHPUnit builds each test object, then calls setUp(): treat it as a constructor.
+  additionalConstructors:
+    - PHPUnit\Framework\TestCase::setUp
   checkMissingCallableSignature: true
   reportUnmatchedIgnoredErrors: true
 
@@ -20,7 +23,9 @@ parameters:
   disallowedFunctionCalls:
     -
       function: 'proc_open()'
-      message: 'Workers are spawned only by the process spawner, with an array command (FRAMEWORK 5.1, D18). The allow-list entry is added in P2.9, when that class exists.'
+      message: 'Workers are spawned only by the process spawner, with an array command (FRAMEWORK 5.1, D18). The spawner is allowed in P2.9, when that class exists. Tests may spawn throwaway scripts through php/tests/Support only, with an array command and pipes (never sockets).'
+      allowIn:
+        - php/tests/Support/*
     -
       function: 'stream_socket_pair()'
       message: 'Use socket_create_pair() with SOCK_CLOEXEC. stream_socket_pair() leaks descriptors into child processes (F1). Allowed in tests only.'

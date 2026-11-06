@@ -4,15 +4,15 @@ declare(strict_types=1);
 
 namespace Raphp\Core\Config;
 
-use RuntimeException;
+use Raphp\Error\RaphpException;
 
 /**
  * Thrown when a configuration file or environment value is not valid.
  *
  * It carries the problems found (at most {@see Problems::MAX}) and says how many more were
- * left out. Step P1.6 re-parents it under the framework's error hierarchy.
+ * left out. It is a {@see RaphpException}, but not an IPC error: it never crosses the wire.
  */
-final class InvalidConfig extends RuntimeException
+final class InvalidConfigException extends RaphpException
 {
     /**
      * @param list<string> $problems

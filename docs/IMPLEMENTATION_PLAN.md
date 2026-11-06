@@ -140,7 +140,7 @@ Code: `shim-win/`, `spike01b.php`.
 - **Result:** passes. The child was killed 5 to 9 ms after a master `SIGKILL`. Without `prctl` (control test) the child was still alive at the end of the 3 s observation window. The startup race is handled by the `getppid()` guard.
 
 ### P0.4 Spike 2: native chrome on Linux with a drawn window (R2). Size M. **Decided**
-**Decided by you:** option (a), GNOME first, improve later. This is a decision, not a hands-on pass. Findings are in `PROGRESS.md`. A later chrome experiment verified a real portal file dialog end to end (requested from PHP through the shim, result returned as an event, dialog not attached to the window) and the title bar's close button. The tray, menus, how things look, dialog parenting and responsiveness during a dialog were NOT exercised, and are deferred to P3.12a to P3.12c.
+**Decided by you:** option (a), GNOME first, improve later. This is a decision, not a hands-on pass. Findings are in `PROGRESS.md`. A later chrome experiment verified a real portal file dialog end to end (requested from PHP through the shim, result returned as an event, dialog not attached to the window) and the title bar's close button. The tray, menus, dialog parenting and responsiveness during a dialog were NOT exercised, and are deferred to P3.12a to P3.12c.
 - **Do:** evaluate, in this order, and stop at the first acceptable one:
   - **(a)** winit window + `rfd`/portal file dialog + custom in-window menus + tray via StatusNotifier.
   - **(b)** GTK4 window with a GL area hosting the renderer (needs `gtk4-devel`, asked for first).
@@ -218,15 +218,22 @@ Depends on your hosting answer. Runs `make check` on PHP 8.5 (the floor, D23), p
 - No global helpers, no static facades.
 **Done when:** unit tests cover config loading (valid, invalid, env override) and container wiring.
 **Result (2026-11-06):** passes. `make check` exits 0 with **302 tests and 481 assertions**; PHPStan runs at `level: max`.
-- **Built** (all under `php/src/Core`): `Config\{Config, ConfigLoader, InvalidConfig, Problems, WorkerConfig, UiConfig, PhpConfig, BuildConfig}`, `Logging\{LogLevel, LoggerFactory, LineLogFormatter}`, `Clock\SystemClock`, `Container\ContainerFactory`. Rules and environment overrides are in FRAMEWORK 9.2 (D29, needs your approval). `InvalidConfig` is re-parented under the error hierarchy in P1.6.
+- **Built** (all under `php/src/Core`): `Config\{Config, ConfigLoader, InvalidConfigException, Problems, WorkerConfig, UiConfig, PhpConfig, BuildConfig}`, `Logging\{LogLevel, LoggerFactory, LineLogFormatter}`, `Clock\SystemClock`, `Container\ContainerFactory`. Rules and environment overrides are in FRAMEWORK 9.2 (D29, needs your approval). `InvalidConfigException` extends the framework's `RaphpException` (P1.6).
 - **Verified by attack and by mutation.** I probed the loader with hostile input and fixed what it found (a PCRE `$` trailing-newline hole, weak path checks, `null` sections treated as absent, an unbounded pool, a crash on a non-string environment value, control characters in error output). An independent review (three lenses, two skeptics per finding) then confirmed 20 more points, all applied: realpath and `file://`, digit-only keys becoming integer keys, unbounded and unescaped error output, the log level as an enum (D30), the logger taking its time from the PSR-20 clock in UTC, and the Fiber limit of PHP-DI (R24). Finally **60 deliberate mutations of the source were applied one at a time: 58 were killed by the tests, and the 2 survivors are equivalent** (a planted no-op, and a leading-slash check that the empty-segment rule also covers).
 - **Not covered:** the logger's default stream (`php://stderr`) is not captured by a test; a manifest that repeats a JSON key keeps the last value (R25); the container is not exercised under real concurrency.
 
 ### P1.6 Error model. Size S
 - `Raphp\Error\*` exception hierarchy and an `ErrorCode` enum matching FRAMEWORK 6.6.
 **Done when:** tests prove every code round-trips to and from its string form.
+**Result (2026-11-06):** passes. `make check` exits 0 with **415 tests and 810 assertions**, no skips.
+- **Built** (`php/src/Error`): the string-backed `ErrorCode` enum (the nine codes of FRAMEWORK 6.6), the abstract `RaphpException`, the abstract `RpcException` (`wireCode()`, `toWire()`, `fromWire()`), nine final exceptions (one per code), and `ApplicationException` for `E_APP_[A-Z0-9_]+`. `InvalidConfig` became `InvalidConfigException` and extends `RaphpException`. Rules and the table of codes to classes are in FRAMEWORK 6.6 (D32, needs your approval).
+- **Round trips:** every code round-trips through its string, and every exception through real `json_encode` and `json_decode` back to the same class, message and data, including falsy data (`false`, `0`, `''`).
+- **Edge cases covered:** a malformed error object, an unknown code, an `E_APP_*` code in the wrong shape, extra keys from a newer peer, a missing `data`, and the previous exception staying local.
+- **Mutation testing:** 56 deliberate bugs (every wire string, every code-to-class mapping, every validation branch, every wire field, the `final` and `abstract` modifiers). **All 56 were killed, none survived.**
+- **A lesson:** PHPStan rejected two of my first tests as tautologies it could prove statically, so I replaced them with a test that exercises real behaviour. That a module exception is not an IPC error is enforced by the type system.
 
 **Checkpoint 1:** `make check` is green on a clean clone. You review structure and tooling.
+**Checkpoint 1 status (2026-11-06):** a clean copy of the working tree (no `vendor/`, no caches), installed from `composer.lock` (72 packages), passes `make check` with 415 tests and 810 assertions. CI on GitHub has run green on commits `f221905` and `aa1e919` but not yet on the final version, which is not committed. You review structure and tooling.
 
 ---
 
@@ -238,22 +245,32 @@ Depends on your hosting answer. Runs `make check` on PHP 8.5 (the floor, D23), p
 - Revolt error handler implementing O12 (master: log, graceful shutdown, non-zero exit). SIGINT/SIGTERM handling. Ordered shutdown hooks.
 **Done when:** integration tests (child process) show correct exit codes and hook order for a thrown exception, SIGINT and SIGTERM.
 
+**Result (2026-11-06):** passes. `Raphp\Core\Kernel`; exit codes 0, 1, 130, 143 or the code given to `stop()`; hooks run last-registered first within one shared 5 s budget; a failing or overrunning hook is logged and makes the exit non-zero; a second signal ends the process at once. 11 integration tests against a real child process, stable over 8 repeated runs. FRAMEWORK 4.5.
+
 ### P2.2 Supervised background task runner. Size S
 - Fire-and-forget tasks that log failures (PSR-3), never silently swallowed, never an unhandled `UnhandledFutureError`.
 **Done when:** a test proves a failing background task is logged and the loop keeps running.
+
+**Result (2026-11-06):** passes. `Raphp\Async\BackgroundTasks` with `run()`, `count()`, `awaitAll()` and `cancelAll()`; 12 tests, including proof that no future is left unhandled. Amp starts a task on the next tick, so a task is visible in `count()` right after `run()` but has not yet started.
 
 ### P2.3 NDJSON codec. Size M
 - `Codec` interface and `JsonLineCodec`: no pretty-print, strict UTF-8, incremental decoder for partial and multi-message chunks, max line size → `E_PAYLOAD_TOO_LARGE`.
 - Shared **golden files** in `docs/protocol/golden/` that the Rust side will reuse.
 **Done when:** tests cover split-anywhere chunking (every byte boundary), multiple messages per chunk, oversized lines, invalid UTF-8, and invalid JSON.
 
+**Result (2026-11-06):** passes. The decoder is pull-based and reads in linear time. A bad line is an `E_PROTOCOL` item and decoding continues. An oversize line (complete, or unfinished past the limit) is one `E_PAYLOAD_TOO_LARGE`, after which the decoder stops and discards input, so memory stays bounded. This is the decoder half of R19; the transport half (a large message ahead of a ping) is still P2.7. Golden files are in `docs/protocol/golden/`. Mutation testing: 26 of 29 killed, 3 equivalent. A JSON object with digit keys decodes to a PHP list (F32) and is still an object: the envelope check in P2.4 judges its keys. FRAMEWORK 6.3.
+
 ### P2.4 Message types. Size S
 - Immutable `Envelope` and typed messages (`Request`, `Response`, `Event`, `Cancel`, `Hello`, `Bye`, `Ping`, `Pong`), a `Kind` enum, validation that maps to `E_PROTOCOL`.
 **Done when:** tests cover valid messages, missing fields, wrong types, unknown `kind`.
 
+**Result (2026-11-06):** passes. `Kind` enum, `Envelope` interface and eight final readonly messages; `EnvelopeReader` checks field types and maps every refusal to `E_PROTOCOL`, the constructors check values. Every golden message reads into the right type and writes back to the golden bytes. About 70 refusal cases are tested for their reason. Mutation testing: 55 of 55 killed. The spec example gave a progress `evt` an `id`; removed (F36). FRAMEWORK 6.4.
+
 ### P2.5 Transport and stream transport. Size M
 - `Transport` interface; `StreamTransport` over a stream resource (Amp byte streams), with write back-pressure and EOF/close handling.
 **Done when:** tests over an in-process `stream_socket_pair` show ordered delivery, back-pressure on large writes, and clean close on both sides. Using `stream_socket_pair` here is acceptable ONLY because no child process is spawned, so the descriptors can never be inherited. It does not contradict the close-on-exec rule. Closing a transport while read or write watchers are registered cancels the watchers first and never crashes `stream_select` (F5). Any test or code path that crosses `proc_open` must use the P2.9 channel factory, never `stream_socket_pair` (F1). *(added after the Phase 0 audit)*
+
+**Result (2026-11-06):** passes. `Transport` (bytes only) and `StreamTransport` over a stream socket. Tested over an in-process socket pair: ordered delivery, simultaneous two-way traffic, a 16 MiB write that waits for a slow reader while the loop keeps ticking, half-close, close with a read or a write waiting, 50 close cycles with pending reads (no stray descriptors, no loop errors), cancellation, concurrent writers that never interleave. **Two findings shaped the code:** an AF_UNIX socket takes only about 280 small writes before a write waits (F38), and Amp's `end()` loses queued writes (F39), so `StreamTransport::end()` waits for pending writes itself. FRAMEWORK 6.1 and 6.8. **For P2.6:** a write can wait after a few hundred small messages, so the peer's sending path must be designed for that (a queue, or a rule on who may block).
 
 ### P2.6 RPC peer and middleware. Size L
 - `RpcPeer` used on both sides: `call()`, handler registry, `id` correlation with `DeferredFuture`, progress events (`evt` with `ref`), cancellation (`cancel` ↔ `DeferredCancellation`), timeouts, in-flight cap.
@@ -364,7 +381,7 @@ A doc section listing blocking PHP functions and their Raphp replacements.
 ### P3.6 Window backend. Size L
 - winit window per P0.1: create, title, size, close, focus, scale factor, resize events; Wayland and X11.
 **Done when:** a manual checklist passes on your session, and screenshots plus event traces are attached. *(added after the Phase 0 audit:)*
-- On GNOME/Wayland the winit client-side title bar allows move, resize, maximize and close, and a screenshot records its look. You already accepted its look from the chrome experiment (rounded corners, shadows); the screenshot is still recorded as evidence.
+- On GNOME/Wayland the winit client-side title bar allows move, resize, maximize and close, and a screenshot records its look. Its look is accepted (D31, from the chrome experiment); the screenshot is recorded as evidence only, not as a review gate.
 - Redraw pacing (F8), with static content and no animation or caret blink: an idle window (no commands, no input) draws zero frames over 5 seconds after its initial frame, read from the P3.3 redraw counter, and its CPU use is recorded as a measured figure, not a threshold. Separately, minimize or hide the window and record whether the counter advances, per compositor as observed. This is a recorded result, not a pass or fail condition, because occlusion reporting is compositor-dependent and unverified. The idle-window zero-frames check above is the hard criterion.
 - The P3.5 worker-spawn test (R17) is repeated with the real window open.
 

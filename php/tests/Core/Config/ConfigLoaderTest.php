@@ -8,7 +8,7 @@ use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Raphp\Core\Config\BuildConfig;
 use Raphp\Core\Config\ConfigLoader;
-use Raphp\Core\Config\InvalidConfig;
+use Raphp\Core\Config\InvalidConfigException;
 use Raphp\Core\Config\PhpConfig;
 use Raphp\Core\Config\UiConfig;
 use Raphp\Core\Config\WorkerConfig;
@@ -59,11 +59,11 @@ final class ConfigLoaderTest extends TestCase
     {
         try {
             (new ConfigLoader())->load($this->write($content), $environment);
-        } catch (InvalidConfig $exception) {
+        } catch (InvalidConfigException $exception) {
             return $exception->problems();
         }
 
-        self::fail('Expected InvalidConfig, but the configuration was accepted.');
+        self::fail('Expected InvalidConfigException, but the configuration was accepted.');
     }
 
     /**
@@ -197,8 +197,8 @@ final class ConfigLoaderTest extends TestCase
     {
         try {
             (new ConfigLoader())->load($this->directory . '/missing.json');
-            self::fail('Expected InvalidConfig.');
-        } catch (InvalidConfig $exception) {
+            self::fail('Expected InvalidConfigException.');
+        } catch (InvalidConfigException $exception) {
             self::assertSame(['the file does not exist or is not readable'], $exception->problems());
             self::assertStringContainsString('missing.json', $exception->getMessage());
         }
@@ -210,8 +210,8 @@ final class ConfigLoaderTest extends TestCase
 
         try {
             (new ConfigLoader())->load('file://' . $file);
-            self::fail('Expected InvalidConfig.');
-        } catch (InvalidConfig $exception) {
+            self::fail('Expected InvalidConfigException.');
+        } catch (InvalidConfigException $exception) {
             self::assertSame(['the file does not exist or is not readable'], $exception->problems());
         }
     }
@@ -220,8 +220,8 @@ final class ConfigLoaderTest extends TestCase
     {
         try {
             (new ConfigLoader())->load($this->directory);
-            self::fail('Expected InvalidConfig.');
-        } catch (InvalidConfig $exception) {
+            self::fail('Expected InvalidConfigException.');
+        } catch (InvalidConfigException $exception) {
             self::assertSame(['the file does not exist or is not readable'], $exception->problems());
         }
     }
@@ -237,8 +237,8 @@ final class ConfigLoaderTest extends TestCase
 
         try {
             (new ConfigLoader())->load($file);
-            self::fail('Expected InvalidConfig.');
-        } catch (InvalidConfig $exception) {
+            self::fail('Expected InvalidConfigException.');
+        } catch (InvalidConfigException $exception) {
             self::assertSame(['the file does not exist or is not readable'], $exception->problems());
         } finally {
             chmod($file, 0o600);
@@ -415,8 +415,8 @@ final class ConfigLoaderTest extends TestCase
     {
         try {
             (new ConfigLoader())->load($this->directory . '/missing.json', ['RAPHP_LOG_LEVEL' => 'loud']);
-            self::fail('Expected InvalidConfig.');
-        } catch (InvalidConfig $exception) {
+            self::fail('Expected InvalidConfigException.');
+        } catch (InvalidConfigException $exception) {
             self::assertCount(2, $exception->problems());
         }
     }
@@ -556,8 +556,8 @@ final class ConfigLoaderTest extends TestCase
     {
         try {
             (new ConfigLoader())->load($this->write(['colour' => 'red']));
-            self::fail('Expected InvalidConfig.');
-        } catch (InvalidConfig $exception) {
+            self::fail('Expected InvalidConfigException.');
+        } catch (InvalidConfigException $exception) {
             self::assertStringStartsWith('Invalid configuration (', $exception->getMessage());
             self::assertStringContainsString("\n  - name: is required", $exception->getMessage());
             self::assertStringContainsString("\n  - entry: is required", $exception->getMessage());
@@ -575,8 +575,8 @@ final class ConfigLoaderTest extends TestCase
 
         try {
             (new ConfigLoader())->load($this->write($manifest));
-            self::fail('Expected InvalidConfig.');
-        } catch (InvalidConfig $exception) {
+            self::fail('Expected InvalidConfigException.');
+        } catch (InvalidConfigException $exception) {
             self::assertCount(50, $exception->problems());
             self::assertStringEndsWith("\n  ... and 150 more problems not shown", $exception->getMessage());
         }
@@ -591,8 +591,8 @@ final class ConfigLoaderTest extends TestCase
 
         try {
             (new ConfigLoader())->load($this->write($manifest));
-            self::fail('Expected InvalidConfig.');
-        } catch (InvalidConfig $exception) {
+            self::fail('Expected InvalidConfigException.');
+        } catch (InvalidConfigException $exception) {
             self::assertStringEndsWith("\n  ... and 1 more problem not shown", $exception->getMessage());
         }
     }
@@ -606,8 +606,8 @@ final class ConfigLoaderTest extends TestCase
 
         try {
             (new ConfigLoader())->load($this->write($manifest));
-            self::fail('Expected InvalidConfig.');
-        } catch (InvalidConfig $exception) {
+            self::fail('Expected InvalidConfigException.');
+        } catch (InvalidConfigException $exception) {
             self::assertCount(50, $exception->problems());
             self::assertStringNotContainsString('more problem', $exception->getMessage());
         }
@@ -617,8 +617,8 @@ final class ConfigLoaderTest extends TestCase
     {
         try {
             (new ConfigLoader())->load($this->write([...self::minimal(), str_repeat('k', 100_000) => 1]));
-            self::fail('Expected InvalidConfig.');
-        } catch (InvalidConfig $exception) {
+            self::fail('Expected InvalidConfigException.');
+        } catch (InvalidConfigException $exception) {
             self::assertLessThan(1_000, strlen($exception->getMessage()));
             self::assertStringContainsString('...: unknown key', $exception->getMessage());
         }
@@ -662,8 +662,8 @@ final class ConfigLoaderTest extends TestCase
     {
         try {
             (new ConfigLoader())->load($this->directory . "/evil\nname\e[31m.json");
-            self::fail('Expected InvalidConfig.');
-        } catch (InvalidConfig $exception) {
+            self::fail('Expected InvalidConfigException.');
+        } catch (InvalidConfigException $exception) {
             self::assertSame(1, substr_count($exception->getMessage(), "\n"), 'only the line break after the header may remain');
             self::assertStringContainsString('evil\\nname\\033[31m.json', $exception->getMessage());
         }
@@ -673,8 +673,8 @@ final class ConfigLoaderTest extends TestCase
     {
         try {
             (new ConfigLoader())->load($this->directory . "/missing-\xff.json");
-            self::fail('Expected InvalidConfig.');
-        } catch (InvalidConfig $exception) {
+            self::fail('Expected InvalidConfigException.');
+        } catch (InvalidConfigException $exception) {
             self::assertSame(1, preg_match('//u', $exception->getMessage()), 'the message must be valid UTF-8');
             self::assertStringContainsString('missing-\\xff.json', $exception->getMessage());
         }

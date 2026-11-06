@@ -1,0 +1,108 @@
+[
+    {
+        "name": "bad json line, then a good one",
+        "base64": "e25vcGV9Cnsia2luZCI6InBpbmcifQo=",
+        "items": [
+            "error:E_PROTOCOL",
+            {
+                "kind": "ping"
+            }
+        ],
+        "atEnd": null
+    },
+    {
+        "name": "invalid utf-8, then a good one",
+        "base64": "eyJraW5kIjoieCIsImEiOiL/In0KeyJraW5kIjoicG9uZyJ9Cg==",
+        "items": [
+            "error:E_PROTOCOL",
+            {
+                "kind": "pong"
+            }
+        ],
+        "atEnd": null
+    },
+    {
+        "name": "not objects, then a good one",
+        "base64": "WzEsMl0KInRleHQiCjQyCm51bGwKeyJraW5kIjoicGluZyJ9Cg==",
+        "items": [
+            "error:E_PROTOCOL",
+            "error:E_PROTOCOL",
+            "error:E_PROTOCOL",
+            "error:E_PROTOCOL",
+            {
+                "kind": "ping"
+            }
+        ],
+        "atEnd": null
+    },
+    {
+        "name": "blank line, then a good one",
+        "base64": "Cnsia2luZCI6InBpbmcifQo=",
+        "items": [
+            "error:E_PROTOCOL",
+            {
+                "kind": "ping"
+            }
+        ],
+        "atEnd": null
+    },
+    {
+        "name": "trailing garbage after the object",
+        "base64": "eyJraW5kIjoicGluZyJ9IHgK",
+        "items": [
+            "error:E_PROTOCOL"
+        ],
+        "atEnd": null
+    },
+    {
+        "name": "input ends in the middle of a message",
+        "base64": "eyJraW5kIjoicGluZyJ9Cnsia2luZCI6InBv",
+        "items": [
+            {
+                "kind": "ping"
+            }
+        ],
+        "atEnd": "error:E_PROTOCOL"
+    },
+    {
+        "name": "a line of exactly the limit is accepted (limit 15)",
+        "maxLineBytes": 15,
+        "base64": "eyJraW5kIjoicGluZyJ9Cg==",
+        "items": [
+            {
+                "kind": "ping"
+            }
+        ],
+        "atEnd": null
+    },
+    {
+        "name": "a line one byte over the limit is fatal (limit 14)",
+        "maxLineBytes": 14,
+        "base64": "eyJraW5kIjoicGluZyJ9Cnsia2luZCI6InBpbmcifQo=",
+        "items": [
+            "error:E_PAYLOAD_TOO_LARGE"
+        ],
+        "atEnd": null
+    },
+    {
+        "name": "a good message, then an oversize line (limit 16)",
+        "maxLineBytes": 16,
+        "base64": "eyJraW5kIjoicGluZyJ9Cnsia2luZCI6InBpbmciLCJwYWRkaW5nIjoieHh4eHh4eHgifQp7ImtpbmQiOiJwaW5nIn0K",
+        "items": [
+            {
+                "kind": "ping"
+            },
+            "error:E_PAYLOAD_TOO_LARGE"
+        ],
+        "atEnd": null
+    },
+    {
+        "name": "an oversize line that never ends (limit 16)",
+        "maxLineBytes": 16,
+        "base64": "eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eA==",
+        "items": [
+            "error:E_PAYLOAD_TOO_LARGE"
+        ],
+        "atEnd": null
+    }
+]

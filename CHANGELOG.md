@@ -8,6 +8,12 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - Renamed the project from the code name niphy to Raphp (namespace `Raphp\`, `libraphp`, `raphp.json`, `RAPHP_*` variables, CLI `rlm`). Spike code under `spikes/` keeps the old names.
 
 ### Added
+- IPC transport (step P2.5): a `Transport` interface and `StreamTransport` over a stream socket, with back-pressure, an `end()` that waits for pending writes, and an immediate `close()` that cancels event-loop watchers first.
+- IPC messages (step P2.4): a `Kind` enum, an `Envelope` interface, eight immutable message classes and `EnvelopeReader`, which turns decoded lines into typed messages or an `E_PROTOCOL` error.
+- IPC codec (step P2.3): `Codec` and `Decoder` interfaces, `JsonLineCodec` (compact ASCII NDJSON, size and depth limits) and a pull-based incremental decoder that recovers from bad lines and stops on an oversize line, plus golden wire-format files in `docs/protocol/golden/`.
+- Background task runner (step P2.2): `BackgroundTasks` runs fire-and-forget work, logs failures and supports cancelling all tasks.
+- Kernel (step P2.1): starts the application inside the event loop, handles SIGINT and SIGTERM, runs ordered shutdown hooks within a time budget and returns a defined exit code.
+- Error model (step P1.6): an `ErrorCode` enum of the nine IPC error codes, an abstract `RaphpException` base, one exception per code, `ApplicationException` for `E_APP_*` codes, and conversion to and from the wire's `error` object.
 - Composition root (step P1.5): typed configuration loaded from `raphp.json` plus environment overrides, a PSR-20 UTC clock, a PSR-3 Monolog logger with an enum log level, and a PSR-11 PHP-DI container.
 - Design document, implementation plan, Phase 0 spike report and progress tracker under `docs/`.
 - Repository scaffold: `LICENSE` (MIT), `README.md`, `CONTRIBUTING.md`, `.editorconfig`, `composer.json` and the directory layout.

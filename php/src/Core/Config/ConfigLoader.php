@@ -13,7 +13,7 @@ use Raphp\Core\Logging\LogLevel;
  * Validation is strict: unknown keys are errors, an explicit `null` is never treated as
  * "absent", names must be real names (never digits only, so PHP never turns a key into an
  * integer), and strings may not hold control characters. Every problem found is reported
- * together in one {@see InvalidConfig}, capped at {@see Problems::MAX}. The loader reads no
+ * together in one {@see InvalidConfigException}, capped at {@see Problems::MAX}. The loader reads no
  * global state: the caller passes the environment, usually `getenv()`, from the entry point.
  * A value that is not a string is reported as a problem, never a crash.
  *
@@ -67,7 +67,7 @@ final class ConfigLoader
     /**
      * @param array<string, mixed> $environment variables such as RAPHP_LOG_LEVEL, normally from getenv()
      *
-     * @throws InvalidConfig
+     * @throws InvalidConfigException
      */
     public function load(string $file, array $environment = []): Config
     {
@@ -107,7 +107,7 @@ final class ConfigLoader
         }
 
         if (!$problems->isEmpty() || $resolved === false || $name === null || $entry === null) {
-            throw InvalidConfig::because($file, $problems->all(), $problems->omitted());
+            throw InvalidConfigException::because($file, $problems->all(), $problems->omitted());
         }
 
         return new Config(
