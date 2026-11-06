@@ -1,0 +1,18 @@
+/spikes
+
+# Composer
+/vendor/
+
+# Tool caches
+/.phpunit.cache/
+/.php-cs-fixer.cache
+/.phpstan.cache/
+
+# Rust build output
+/shim/target/
+
+# Build output and local files
+/dist/
+*.log
+.idea/
+.vscode/

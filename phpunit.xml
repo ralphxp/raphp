@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="vendor/autoload.php"
+         cacheDirectory=".phpunit.cache"
+         colors="true"
+         executionOrder="random"
+         failOnDeprecation="true"
+         failOnPhpunitDeprecation="true"
+         failOnNotice="true"
+         failOnWarning="true"
+         failOnRisky="true"
+         failOnEmptyTestSuite="true"
+         beStrictAboutOutputDuringTests="true"
+         displayDetailsOnPhpunitDeprecations="true"
+         displayDetailsOnTestsThatTriggerDeprecations="true"
+         displayDetailsOnTestsThatTriggerNotices="true"
+         displayDetailsOnTestsThatTriggerWarnings="true">
+  <testsuites>
+    <testsuite name="unit">
+      <directory>php/tests</directory>
+    </testsuite>
+  </testsuites>
+  <source ignoreIndirectDeprecations="true">
+    <include>
+      <directory>php/src</directory>
+    </include>
+  </source>
+  <php>
+    <!-- F11: the system php.ini hides E_DEPRECATED. Tests always run with everything visible. -->
+    <ini name="error_reporting" value="-1"/>
+    <ini name="display_errors" value="1"/>
+    <ini name="memory_limit" value="512M"/>
+  </php>
+</phpunit>

@@ -1,0 +1,43 @@
+{
+  "name": "niphy/niphy",
+  "description": "Raphp (code name niphy): an async PHP runtime with an optional native GUI. Placeholder package name until the rename.",
+  "type": "library",
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Rapha Panchi",
+      "email": "raphapanchi@gmail.com"
+    }
+  ],
+  "require": {
+    "php": ">=8.5",
+    "ext-ffi": "*",
+    "ext-json": "*",
+    "ext-pcntl": "*",
+    "ext-posix": "*",
+    "ext-sockets": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "Niphy\\": "php/src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Niphy\\Tests\\": "php/tests/"
+    }
+  },
+  "config": {
+    "sort-packages": true
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true,
+  "require-dev": {
+    "friendsofphp/php-cs-fixer": "^3.95",
+    "phpstan/phpstan": "^2.3",
+    "phpstan/phpstan-deprecation-rules": "^2.0",
+    "phpstan/phpstan-strict-rules": "^2.1",
+    "phpunit/phpunit": "^13.4",
+    "spaze/phpstan-disallowed-calls": "^4.15"
+  }
+}

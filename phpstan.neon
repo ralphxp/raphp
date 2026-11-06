@@ -1,0 +1,28 @@
+includes:
+  - vendor/phpstan/phpstan-strict-rules/rules.neon
+  - vendor/phpstan/phpstan-deprecation-rules/rules.neon
+  - vendor/spaze/phpstan-disallowed-calls/extension.neon
+
+parameters:
+  # The strictest setting. It passes on the empty project and must never be lowered (P1.1).
+  level: max
+  paths:
+    - php/src
+    - php/tests
+  tmpDir: .phpstan.cache
+  checkTooWideReturnTypesInProtectedAndPublicMethods: true
+  checkUninitializedProperties: true
+  checkMissingCallableSignature: true
+  reportUnmatchedIgnoredErrors: true
+
+  # Forbidden calls. These ban by function name: whether the rule can tell a string
+  # proc_open() argument from an array one is unverified (plan P1.3).
+  disallowedFunctionCalls:
+    -
+      function: 'proc_open()'
+      message: 'Workers are spawned only by the process spawner, with an array command (FRAMEWORK 5.1, D18). The allow-list entry is added in P2.9, when that class exists.'
+    -
+      function: 'stream_socket_pair()'
+      message: 'Use socket_create_pair() with SOCK_CLOEXEC. stream_socket_pair() leaks descriptors into child processes (F1). Allowed in tests only.'
+      allowIn:
+        - php/tests/*
