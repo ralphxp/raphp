@@ -22,6 +22,12 @@ use Raphp\Core\Logging\LoggerFactory;
  *
  * It is the only place that wires services. Everything else receives its dependencies
  * through its constructor (O9). There are no helpers and no static access to the container.
+ *
+ * Services must be built without suspending the current Fiber. PHP-DI's circular-dependency
+ * guard is kept per container, not per Fiber (verified with 7.1.1), so if a constructor or
+ * factory suspends while a service is being built, a second Fiber asking for the same service
+ * fails with a misleading "Circular dependency" error. Do asynchronous initialisation in a
+ * separate step after the container is built (FRAMEWORK 4.9, risk R24).
  */
 final class ContainerFactory
 {
@@ -37,10 +43,13 @@ final class ContainerFactory
         $builder->useAttributes(false);
         $builder->addDefinitions([
             Config::class => $config,
-            LoggerInterface::class => factory(
-                static fn(Config $config): LoggerInterface => (new LoggerFactory())->create($config->logLevel),
-            ),
             ClockInterface::class => autowire(SystemClock::class),
+            LoggerInterface::class => factory(
+                static fn(Config $config, ClockInterface $clock): LoggerInterface => (new LoggerFactory())->create(
+                    $config->logLevel,
+                    clock: $clock,
+                ),
+            ),
         ]);
         $builder->addDefinitions($overrides);
 

@@ -5,15 +5,21 @@ declare(strict_types=1);
 namespace Raphp\Core\Config;
 
 use JsonException;
-use Psr\Log\LogLevel;
+use Raphp\Core\Logging\LogLevel;
 
 /**
  * Reads `raphp.json` and applies environment overrides, producing an immutable {@see Config}.
  *
  * Validation is strict: unknown keys are errors, an explicit `null` is never treated as
- * "absent", and every problem found is reported together in one {@see InvalidConfig}. The
- * loader reads no global state. The caller passes the environment, usually `getenv()`, from
- * the entry point. A value that is not a string is reported as a problem, never a crash.
+ * "absent", names must be real names (never digits only, so PHP never turns a key into an
+ * integer), and strings may not hold control characters. Every problem found is reported
+ * together in one {@see InvalidConfig}, capped at {@see Problems::MAX}. The loader reads no
+ * global state: the caller passes the environment, usually `getenv()`, from the entry point.
+ * A value that is not a string is reported as a problem, never a crash.
+ *
+ * The file is resolved once with realpath() and that path is used for every check and for
+ * reading, so the checks and the read see the same real local file. Stream wrappers such as
+ * `file://` or `phar://` are not accepted.
  *
  * Environment overrides (FRAMEWORK 9.2):
  *  - RAPHP_LOG_LEVEL   a PSR-3 level name, default "info"
@@ -32,18 +38,10 @@ final class ConfigLoader
     /** The largest worker pool accepted. A guard against typos such as an extra zero (FRAMEWORK 9.2). */
     public const int MAX_POOL = 256;
 
-    private const array TOP_LEVEL_KEYS = ['name', 'entry', 'workers', 'ui', 'libs', 'php', 'build'];
+    /** The longest single string accepted, in bytes (FRAMEWORK 9.2). */
+    public const int MAX_STRING_BYTES = 1024;
 
-    private const array LOG_LEVELS = [
-        LogLevel::EMERGENCY,
-        LogLevel::ALERT,
-        LogLevel::CRITICAL,
-        LogLevel::ERROR,
-        LogLevel::WARNING,
-        LogLevel::NOTICE,
-        LogLevel::INFO,
-        LogLevel::DEBUG,
-    ];
+    private const array TOP_LEVEL_KEYS = ['name', 'entry', 'workers', 'ui', 'libs', 'php', 'build'];
 
     private const array TRUE_VALUES = ['1', 'true', 'yes', 'on'];
 
@@ -54,9 +52,15 @@ final class ConfigLoader
 
     private const string WORKER_NAME_PATTERN = '/^[a-z][a-z0-9_-]*\z/';
 
-    private const string LIB_NAME_PATTERN = '/^[a-z0-9][a-z0-9._-]*\z/';
+    private const string LIB_NAME_PATTERN = '/^[a-z][a-z0-9._-]*\z/';
+
+    private const string BACKEND_PATTERN = '/^[a-z][a-z0-9_-]*\z/';
+
+    private const string INI_NAME_PATTERN = '/^[A-Za-z_][A-Za-z0-9_.]*\z/';
 
     private const string EXTENSION_PATTERN = '/^[a-z0-9_]+\z/';
+
+    private const string CONTROL_CHARACTERS = '/[\x00-\x1f\x7f]|\xC2[\x80-\x9f]/';
 
     private const string BYTE_ORDER_MARK = "\xEF\xBB\xBF";
 
@@ -68,7 +72,13 @@ final class ConfigLoader
     public function load(string $file, array $environment = []): Config
     {
         $problems = new Problems();
-        $data = $this->readJson($file, $problems);
+        $resolved = realpath($file);
+        $data = null;
+        if ($resolved === false) {
+            $problems->add('', 'the file does not exist or is not readable');
+        } else {
+            $data = $this->readJson($resolved, $problems);
+        }
 
         $name = null;
         $entry = null;
@@ -96,14 +106,14 @@ final class ConfigLoader
             $ui = new UiConfig($uiOverride, $ui->backend);
         }
 
-        if (!$problems->isEmpty() || $name === null || $entry === null) {
-            throw InvalidConfig::because($file, $problems->all());
+        if (!$problems->isEmpty() || $resolved === false || $name === null || $entry === null) {
+            throw InvalidConfig::because($file, $problems->all(), $problems->omitted());
         }
 
         return new Config(
             name: $name,
             entry: $entry,
-            basePath: dirname((string) realpath($file)),
+            basePath: dirname($resolved),
             workers: $workers,
             ui: $ui,
             libs: $libs,
@@ -115,24 +125,26 @@ final class ConfigLoader
     }
 
     /**
+     * @param string $path a path already resolved with realpath()
+     *
      * @return array<array-key, mixed>|null
      */
-    private function readJson(string $file, Problems $problems): ?array
+    private function readJson(string $path, Problems $problems): ?array
     {
-        if (!is_file($file) || !is_readable($file)) {
+        if (!is_file($path) || !is_readable($path)) {
             $problems->add('', 'the file does not exist or is not readable');
 
             return null;
         }
 
-        $size = filesize($file);
+        $size = filesize($path);
         if ($size !== false && $size > self::MAX_BYTES) {
             $problems->add('', 'the file is larger than 1 MiB, which is far more than a manifest needs');
 
             return null;
         }
 
-        $raw = file_get_contents($file);
+        $raw = file_get_contents($path);
         if ($raw === false) {
             $problems->add('', 'the file could not be read');
 
@@ -193,7 +205,7 @@ final class ConfigLoader
      */
     private function workers(mixed $value, Problems $problems): array
     {
-        $section = $this->object($value, 'workers', $problems);
+        $section = $this->object($value, 'workers', $problems, keyedByName: true);
         $workers = [];
         foreach ($section ?? [] as $key => $definition) {
             $workerName = (string) $key;
@@ -237,6 +249,10 @@ final class ConfigLoader
         $this->rejectUnknown($fields, ['enabled', 'backend'], 'ui', $problems);
         $enabled = $this->optionalBool($fields, 'enabled', 'ui.enabled', $problems) ?? false;
         $backend = $this->optionalString($fields, 'backend', 'ui.backend', $problems) ?? 'default';
+        if (preg_match(self::BACKEND_PATTERN, $backend) !== 1) {
+            $problems->add('ui.backend', 'must start with a lowercase letter and use only lowercase letters, digits, "_" and "-"');
+            $backend = 'default';
+        }
 
         return new UiConfig($enabled, $backend);
     }
@@ -246,18 +262,24 @@ final class ConfigLoader
      */
     private function libs(mixed $value, Problems $problems): array
     {
-        $section = $this->object($value, 'libs', $problems);
+        $section = $this->object($value, 'libs', $problems, keyedByName: true);
         $libs = [];
         foreach ($section ?? [] as $key => $constraint) {
             $libName = (string) $key;
             $path = "libs.{$libName}";
             if (preg_match(self::LIB_NAME_PATTERN, $libName) !== 1) {
-                $problems->add($path, 'the library name may use only lowercase letters, digits, ".", "_" and "-"');
+                $problems->add($path, 'the library name must start with a lowercase letter and use only lowercase letters, digits, ".", "_" and "-"');
+
+                continue;
             }
 
             if (!is_string($constraint) || $constraint === '') {
                 $problems->add($path, 'the version constraint must be a non-empty string');
 
+                continue;
+            }
+
+            if (!$this->plainText($constraint, $path, $problems)) {
                 continue;
             }
 
@@ -295,13 +317,24 @@ final class ConfigLoader
         }
 
         $ini = [];
-        $iniSection = $this->object($this->section($fields, 'ini'), 'php.ini', $problems);
+        $iniSection = $this->object($this->section($fields, 'ini'), 'php.ini', $problems, keyedByName: true);
         foreach ($iniSection ?? [] as $setting => $settingValue) {
-            $path = 'php.ini.' . (string) $setting;
+            $settingName = (string) $setting;
+            $path = "php.ini.{$settingName}";
+            if (preg_match(self::INI_NAME_PATTERN, $settingName) !== 1) {
+                $problems->add($path, 'the setting name must start with a letter or "_" and use only letters, digits, "_" and "."');
+
+                continue;
+            }
+
             if (is_bool($settingValue)) {
-                $ini[(string) $setting] = $settingValue ? '1' : '0';
-            } elseif (is_string($settingValue) || is_int($settingValue) || is_float($settingValue)) {
-                $ini[(string) $setting] = (string) $settingValue;
+                $ini[$settingName] = $settingValue ? '1' : '0';
+            } elseif (is_string($settingValue)) {
+                if ($this->plainText($settingValue, $path, $problems)) {
+                    $ini[$settingName] = $settingValue;
+                }
+            } elseif (is_int($settingValue) || is_float($settingValue)) {
+                $ini[$settingName] = (string) $settingValue;
             } else {
                 $problems->add($path, 'must be a string, number or boolean');
             }
@@ -327,18 +360,19 @@ final class ConfigLoader
     /**
      * @param array<string, mixed> $environment
      */
-    private function logLevel(array $environment, Problems $problems): string
+    private function logLevel(array $environment, Problems $problems): LogLevel
     {
         $raw = $this->environmentValue($environment, 'RAPHP_LOG_LEVEL', $problems);
         if ($raw === '') {
-            return LogLevel::INFO;
+            return LogLevel::Info;
         }
 
-        $level = strtolower($raw);
-        if (!in_array($level, self::LOG_LEVELS, true)) {
-            $problems->add('RAPHP_LOG_LEVEL', $this->quote($raw) . ' is not a log level; use one of: ' . implode(', ', self::LOG_LEVELS));
+        $level = LogLevel::fromName($raw);
+        if ($level === null) {
+            $names = implode(', ', array_map(static fn(LogLevel $case): string => $case->value, LogLevel::cases()));
+            $problems->add('RAPHP_LOG_LEVEL', $this->quote($raw) . " is not a log level; use one of: {$names}");
 
-            return LogLevel::INFO;
+            return LogLevel::Info;
         }
 
         return $level;
@@ -387,12 +421,21 @@ final class ConfigLoader
     }
 
     /**
+     * @param bool $keyedByName true for sections whose keys are names: a JSON object such as
+     *                          {"0": ...} decodes to a PHP list, and the message then explains why
+     *
      * @return array<array-key, mixed>|null
      */
-    private function object(mixed $value, string $path, Problems $problems): ?array
+    private function object(mixed $value, string $path, Problems $problems, bool $keyedByName = false): ?array
     {
-        if (!is_array($value) || ($value !== [] && array_is_list($value))) {
+        if (!is_array($value)) {
             $problems->add($path, 'must be a JSON object');
+
+            return null;
+        }
+
+        if ($value !== [] && array_is_list($value)) {
+            $problems->add($path, $keyedByName ? 'must be a JSON object keyed by name (a name cannot be only digits)' : 'must be a JSON object');
 
             return null;
         }
@@ -444,6 +487,12 @@ final class ConfigLoader
             return null;
         }
 
+        if (strlen($value) > self::MAX_STRING_BYTES) {
+            $problems->add($path, 'must be at most ' . self::MAX_STRING_BYTES . ' bytes');
+
+            return null;
+        }
+
         return $value;
     }
 
@@ -488,10 +537,13 @@ final class ConfigLoader
     /**
      * A path that stays inside the project and has one spelling: it is relative, every segment is
      * a real name, and it has no backslashes or control characters.
+     *
+     * The leading-slash test is also covered by the empty-segment rule below (a leading "/"
+     * produces an empty first segment). It stays to state the intent plainly.
      */
     private function isCleanRelativePath(string $value): bool
     {
-        if (str_starts_with($value, '/') || str_contains($value, '\\') || preg_match('/[\x00-\x1f\x7f]/', $value) === 1) {
+        if (str_starts_with($value, '/') || str_contains($value, '\\') || preg_match(self::CONTROL_CHARACTERS, $value) === 1) {
             return false;
         }
 
@@ -505,11 +557,31 @@ final class ConfigLoader
     }
 
     /**
-     * Quotes a value for an error message, escaping control characters and backslashes so a
-     * newline cannot hide in it.
+     * Free text (a version constraint, an ini value) must be short and free of control characters.
+     */
+    private function plainText(string $value, string $path, Problems $problems): bool
+    {
+        if (strlen($value) > self::MAX_STRING_BYTES) {
+            $problems->add($path, 'must be at most ' . self::MAX_STRING_BYTES . ' bytes');
+
+            return false;
+        }
+
+        if (preg_match(self::CONTROL_CHARACTERS, $value) === 1) {
+            $problems->add($path, 'must not contain control characters');
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Quotes a value for an error message: shortened, with control characters and backslashes
+     * escaped so a newline cannot hide in it.
      */
     private function quote(string $value): string
     {
-        return "'" . addcslashes($value, "\0..\37\177\\") . "'";
+        return "'" . Problems::escape(Problems::shorten($value), escapeBackslash: true) . "'";
     }
 }

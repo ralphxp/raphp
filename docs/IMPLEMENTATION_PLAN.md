@@ -217,6 +217,10 @@ Depends on your hosting answer. Runs `make check` on PHP 8.5 (the floor, D23), p
 - PSR-11 container bootstrapping, typed `Config` loaded from `raphp.json` plus environment, PSR-3 logger (Monolog), PSR-20 clock.
 - No global helpers, no static facades.
 **Done when:** unit tests cover config loading (valid, invalid, env override) and container wiring.
+**Result (2026-11-06):** passes. `make check` exits 0 with **302 tests and 481 assertions**; PHPStan runs at `level: max`.
+- **Built** (all under `php/src/Core`): `Config\{Config, ConfigLoader, InvalidConfig, Problems, WorkerConfig, UiConfig, PhpConfig, BuildConfig}`, `Logging\{LogLevel, LoggerFactory, LineLogFormatter}`, `Clock\SystemClock`, `Container\ContainerFactory`. Rules and environment overrides are in FRAMEWORK 9.2 (D29, needs your approval). `InvalidConfig` is re-parented under the error hierarchy in P1.6.
+- **Verified by attack and by mutation.** I probed the loader with hostile input and fixed what it found (a PCRE `$` trailing-newline hole, weak path checks, `null` sections treated as absent, an unbounded pool, a crash on a non-string environment value, control characters in error output). An independent review (three lenses, two skeptics per finding) then confirmed 20 more points, all applied: realpath and `file://`, digit-only keys becoming integer keys, unbounded and unescaped error output, the log level as an enum (D30), the logger taking its time from the PSR-20 clock in UTC, and the Fiber limit of PHP-DI (R24). Finally **60 deliberate mutations of the source were applied one at a time: 58 were killed by the tests, and the 2 survivors are equivalent** (a planted no-op, and a leading-slash check that the empty-segment rule also covers).
+- **Not covered:** the logger's default stream (`php://stderr`) is not captured by a test; a manifest that repeats a JSON key keeps the last value (R25); the container is not exercised under real concurrency.
 
 ### P1.6 Error model. Size S
 - `Raphp\Error\*` exception hierarchy and an `ErrorCode` enum matching FRAMEWORK 6.6.

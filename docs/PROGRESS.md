@@ -1,7 +1,7 @@
 # Raphp Progress Tracker
 
 **Last updated:** 2026-11-06
-**Current position:** **Phase 1 in progress.** P1.1 to P1.3 are done. P1.4 (CI) is written but **not yet proven green**. The project is now named **Raphp** in code and docs. Your `initial commit` (`83c8a97`) is on GitHub at `ralphxp/raphp`; the rename, the `rlm/` directory and the CI file are not committed yet. Phase 0 was accepted when you started Phase 1.
+**Current position:** **Phase 1 in progress.** P1.1 to P1.5 are done: the composition root is built, reviewed, and mutation-tested. Only **P1.6 (error model)** remains in Phase 1. Your commit `aa1e919` (the first version of P1.5) is on GitHub and CI was green on it (21 s). My later work (the hardening, more tests, the doc updates) is **uncommitted**, so CI has not yet run on the final version.
 **How this file works:** I update it at the end of every step and whenever something is decided or found. The plan lives in `IMPLEMENTATION_PLAN.md`, the design in `FRAMEWORK.md`, the evidence in `SPIKE_REPORT.md`. This file only records what has actually happened.
 
 Legend: ✅ done and verified · 🔄 in progress · ⏳ not started · ⛔ blocked · ⚠️ done with caveats
@@ -13,7 +13,7 @@ Legend: ✅ done and verified · 🔄 in progress · ⏳ not started · ⛔ bloc
 | Phase | Name | Status | Steps done |
 |---|---|---|---|
 | 0 | Spikes and verification | ✅ finished (accepted when you started Phase 1) | 9 of 9 (P0.0 to P0.8) |
-| 1 | Repository foundation | 🔄 in progress | 4 of 6 (P1.1 to P1.4) |
+| 1 | Repository foundation | 🔄 in progress | 5 of 6 (P1.1 to P1.5) |
 | 2 | Runtime core and IPC | ⏳ not started | 0 |
 | 2B | Tier 1 standard library | ⏳ not started | 0 |
 | 3 | `libraphp` shim MVP | ⏳ not started | 0 |
@@ -72,13 +72,20 @@ Clicks and key presses; a tray icon or menu; how the dialog looks; attaching the
 | **P1.3** | Tooling and `make check` | ✅ | `make check` exits 0: formatter clean, PHPStan (`level: max`) clean, 7 PHPUnit tests pass. **Versions:** PHPUnit 13.4.6, PHPStan 2.3.5 (+ strict-rules, deprecation-rules, disallowed-calls 4.15.0), PHP-CS-Fixer 3.95.28 (`@PER-CS3.0`). **Failures shown on purpose:** bad formatting is caught with a diff; `proc_open()` in `php/src` is rejected; `stream_socket_pair()` is rejected in `php/src` and allowed in `php/tests`; a real PHP 8.5 deprecation fails PHPUnit. **Caveat:** the Rust step is *skipped* (no `shim/Cargo.toml` until P3.1), so `cargo fmt`, `clippy` and `cargo test` have not actually run. Only their presence is confirmed |
 | — | **Rename to Raphp** (D28) | ✅ | Code and config by me (`raphp/raphp`, `Raphp\` namespace, `rlm/`); docs by three editors and two reviewers. Both reviewers passed and I fixed their two low notes. `make check` still exits 0. The old name remains only in the history rows D22, D27 and D28, in the spike code and its measurement rows, and in the former-name notes in README, CONTRIBUTING and CHANGELOG |
 | **P1.4** | Continuous integration | ✅ | **Proven.** Your push (`f221905`) triggered the first run: it succeeded in 18 s on a GitHub runner with PHP 8.5.12 and `ffi` enabled. The "Run every check" step showed the formatter clean, PHPStan `[OK]`, PHPUnit `OK (7 tests, 8 assertions)`, and the Rust step skipped as designed. `.github/workflows/ci.yml`; actions `checkout@v7`, `setup-php@v2`, `rust-toolchain@stable`, pinned by tag, not commit. **Watch:** CI's stable Rust is newer than yours (rustfmt 1.10.0 and clippy 0.1.99 against 1.9.0 and 0.1.95), so a lint could pass locally and fail in CI later. P3.1 should pin the toolchain |
-| **P1.5** | Composition root skeleton | ⏳ | |
+| **P1.5** | Composition root skeleton | ✅ | `make check` exits 0: **302 tests, 481 assertions**, PHPStan `level: max`. Typed `Config` from `raphp.json` plus environment (strict `ConfigLoader`), UTC PSR-20 `SystemClock`, Monolog PSR-3 logger with an enum `LogLevel` and the PSR-20 clock, PHP-DI container (`ContainerFactory`). **Attacked and fixed:** a PCRE `$` trailing-newline hole, weak path checks, `null` read as absent, unbounded pool, a crash on a non-string env value, control characters in error output. **Independent review:** 20 findings confirmed, all applied. **Mutation testing:** 60 mutations, 58 killed, 2 equivalent survivors. **Not covered:** the logger's default `php://stderr`; duplicate JSON keys keep the last (R25); no real concurrency test. Needs your approval: D29 |
 | **P1.6** | Error model | ⏳ | |
 
 **Phase 1 findings**
 - **F20:** Composer shells out to git to detect the project version, so the mount's "dubious ownership" problem affects Composer too (a warning plus a defaulted version), not only git. Git ignores `safe.directory` in a repository's own config, so the fix is a **global** entry (you already have one for tinypay, comanager and jobAI) or `git -c safe.directory=...` per command. I correct my earlier offer of a "repo-local" entry, which was never possible.
 - **F20 resolved:** you ran the global `safe.directory` command. Git and Composer now work without the workaround, which I confirmed.
 - **F21:** on this mount Composer installs executables as regular proxy files instead of symlinks, and they run. F19's open question is closed.
+- **F23:** in PCRE `$` also matches just before a trailing newline, so `/^name$/` accepts `"name\n"`. Use `\z`.
+- **F24:** PHP turns digit-only JSON object keys into integer array keys, and `{"0": ...}` decodes to a *list*. Names are therefore required to start with a letter, and the error message explains it.
+- **F25:** Monolog 3.12.1 takes a PSR-20 clock and a timezone in its constructor; without them it stamps records in the process's local timezone and ignores the container's clock.
+- **F26:** PHP-DI 7.1.1's circular-dependency guard is per container, not per Fiber. A service whose construction suspends makes a second Fiber fail with a misleading "Circular dependency" error (R24). A characterisation test pins it.
+- **F27:** PHPUnit 13 deprecates `expectExceptionMessage()`. The tests catch the exception and assert on its message instead.
+- **F28:** `addcslashes` writes TAB and CR as `\t` and `\r` and other control characters in octal (`\000`, `\037`, `\177`). Both are safe; the tests accept either form.
+- **F29:** with PHP's JSON depth of 64, arrays nested 60 deep inside `php.ini` parse and 61 do not (measured, not calculated).
 - **F22:** PHPUnit 13 narrows `error_reporting()` inside tests to 245 on purpose, so a test cannot assert the value (my first version of the test failed for this reason). The test now proves the behaviour instead. An expected deprecation still counts as an issue under `failOnDeprecation` unless the test also carries `#[IgnoreDeprecations]`.
 
 **Public name chosen by you: Raphp** (Ralph PHP, pronounced "raf-pee"), D27. `raphp` is free on crates.io, npm and Packagist; a GitHub *user* named `raphp` exists and is **not** yours: your account is `ralphxp` and the repository is `ralphxp/raphp`. That blocks nothing, because Composer vendor names are independent of GitHub handles.
@@ -129,6 +136,8 @@ None has a solution yet. Each names the plan step whose acceptance must resolve 
 | R21 | Hot reload covers worker code only, but most edits land in master code |
 | R22 | `SO_PEERCRED` is not exposed by PHP's sockets extension, so the secondary path-socket auth is unspecified |
 | R23 | The shim's glibc floor is higher than PHP's (fix D21 approved on 2026-11-06; the build recipe is not verified yet) |
+| R24 | PHP-DI's circular-dependency guard is not Fiber-aware: construct services without suspending (verified, rule adopted) |
+| R25 | A manifest that repeats a JSON key keeps the last value silently (open, accepted) |
 
 ---
 
@@ -136,12 +145,13 @@ None has a solution yet. Each names the plan step whose acceptance must resolve 
 
 | # | Need | Status |
 |---|---|---|
-| 1 | **Push the rename and the CI file** (they are uncommitted). Then I check the workflow with `gh run list`. P1.4 is not proven until it is green | **Open** |
-| 2 | **D21 (Proposed):** build the Rust shim against an old glibc so the shim does not set the distributable floor | **Open, needs your approval** |
-| 3 | **Your impressions of the chrome experiment** (title bar look, dialog look, placement, anything odd) | **Partly answered** |
-| 4 | **Packagist vendor `raphp`:** availability is unchecked (Packagist timed out). Check when you are ready to publish | Later |
+| 1 | **Commit and push the P1.5 hardening** (source and test changes since `aa1e919`, plus docs). CI was green on `aa1e919` but has not yet run on the final version. Then I check it with `gh`. I make no commits | **Open** |
+| 2 | **D29 approval:** the manifest and environment rules (strict keys, name patterns, clean paths, the limits of 1 MiB, pool 1 to 256, strings 1024 bytes, 50 problems shown, and the three `RAPHP_*` variables). The limits are my numbers, not measured ones | **Open, needs your approval** |
+| 3 | **The chrome experiment's file dialog:** you accepted the window's look; how the dialog looked and whether it opened over the window is still unreported | **Partly answered** |
+| 4 | **Next step:** P1.6 (error model, `Raphp\Error\*` and an `ErrorCode` enum) is the last step of Phase 1. Shall I continue? | **Open** |
+| 5 | Packagist vendor `raphp`: availability unchecked (Packagist timed out). Check when you are ready to publish | Later |
 
-Already answered: PHP 8.5 or newer, PHP-DI, PHP-CS-Fixer, copyright holder Codizium, public name Raphp, rename now (done, D28), CLI renamed to `rlm`, Git host GitHub, global `safe.directory` (done), commits are yours (initial commit made and pushed), native chrome option (a), plan approval. `master` is kept as the branch name.
+Already answered: PHP 8.5 or newer, PHP-DI, PHP-CS-Fixer, copyright holder Codizium, public name Raphp, rename now (done, D28), `rlm`, GitHub, global `safe.directory`, D21 approved, the window's look, commits are yours.
 
 ---
 
@@ -157,6 +167,7 @@ The authoritative log is `FRAMEWORK.md` section 15. In summary:
 - **Quality:** PER-CS, PHPStan strict, PHPUnit. The formatter is PHP-CS-Fixer (D25).
 - **License:** MIT, semantic versioning.
 - **Naming:** the public name is **Raphp** (D27). The project was renamed from the code name `niphy` on 2026-11-06 (D28). Nothing is published.
+- **P1.5 (D29, D30, proposed):** manifest and environment rules with limits; the log level is an enum and the logger uses the PSR-20 clock in UTC.
 - **Phase 1 tooling (D23 to D26):** PHP 8.5 or newer, PHP-DI 7, PHP-CS-Fixer with `@PER-CS3.0`, copyright holder Codizium.
 - **Errors:** master logs and shuts down non-zero; worker exits non-zero and is restarted.
 - **Middleware:** Amp-native for HTTP, one PSR-15-shaped contract for Raphp RPC.
@@ -169,7 +180,7 @@ The authoritative log is `FRAMEWORK.md` section 15. In summary:
 
 **Project documents** (`docs/`): `FRAMEWORK.md`, `IMPLEMENTATION_PLAN.md`, `PROGRESS.md`, `SPIKE_REPORT.md`
 
-**Repository root (Phase 1):** `LICENSE`, `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `.editorconfig`, `.gitignore`, `composer.json` (the author is your own name, edited by you), `composer.lock`, `Makefile`, `phpstan.neon`, `.php-cs-fixer.php`, `phpunit.xml`, `php/tests/EnvironmentTest.php`, `shim/rustfmt.toml`, `shim/clippy.toml`, placeholders in `php/src`, `php/tests`, `shim`, `rlm`, `examples`, and from P1.4 `.github/workflows/ci.yml`. **Committed:** everything up to P1.3, in your `initial commit` `83c8a97` (pushed to `ralphxp/raphp`). **Not committed:** the rename, the `nlm/` to `rlm/` directory move, the CI file, and the doc updates after that commit.
+**Repository root (Phase 1):** `LICENSE`, `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `.editorconfig`, `.gitignore`, `composer.json` (the author is your own name, edited by you), `composer.lock`, `Makefile`, `phpstan.neon`, `.php-cs-fixer.php`, `phpunit.xml`, `php/tests/EnvironmentTest.php`, `shim/rustfmt.toml`, `shim/clippy.toml`, placeholders in `php/src`, `php/tests`, `shim`, `rlm`, `examples`, and from P1.4 `.github/workflows/ci.yml`. **P1.5 adds** under `php/src/Core`: `Config/` (8 classes), `Logging/` (`LogLevel`, `LoggerFactory`, `LineLogFormatter`), `Clock/SystemClock`, `Container/ContainerFactory`; and under `php/tests`: `Core/Config/ConfigLoaderTest`, `Core/Logging/{LogLevelTest, LoggerFactoryTest}`, `Core/Clock/SystemClockTest`, `Core/Container/ContainerFactoryTest`, `Support/{ConfigFixture, FrozenClock, NeedsLoggerAndClock}`. **Committed:** everything up to P1.3 (`initial commit` `83c8a97`), the rename and CI (`f221905`), and the first version of P1.5 (`aa1e919`), all pushed to `ralphxp/raphp`. **Not committed:** my P1.5 hardening (source and tests), the new `LogLevel` and `LineLogFormatter` classes, and the doc updates since `aa1e919`.
 
 **Throwaway spikes** (`spikes/`, about 1.8 GB in total, most of it `04-static-php/work` at 1.4 GB and `shim-win/target` at 318 MB; both must be ignored by git):
 - `01-shim-roundtrip/`: Rust shim stage A (`shim/`), windowed shim with file dialog (`shim-win/`), `spike01.php`, `spike01b.php`, `hold.php`, `chrome.php`
@@ -227,3 +238,8 @@ The authoritative log is `FRAMEWORK.md` section 15. In summary:
 - Found that your GitHub account is `ralphxp` and `raphp` is the repository name, so the GitHub user `raphp` is not yours (it does not block anything).
 - Renamed the project to Raphp: I did code and config (`composer.json`, namespaces, the test, the formatter folder list, `nlm/` to `rlm/`, lock hash); three editor agents did the docs; two reviewers passed both. I fixed their two low notes (a wrongly rewritten `raphp run`, and a stale CONTRIBUTING sentence). `make check` still exits 0.
 - P1.4: wrote `.github/workflows/ci.yml`, using current action versions looked up on GitHub. It has not run yet.
+- You answered: D21 approved, you like the window look (rounded corners, shadows), continue with P1.5. I verified your push: commit `f221905`, CI green on a runner with PHP 8.5.12 (P1.4 proven).
+- P1.1 to P1.3 were already recorded; P1.5 built: typed config, strict loader, clock, logger, container. My own hostile-input probe found six real defects; all fixed with regression tests.
+- Ran an independent adversarial review of P1.5 (three lenses, two skeptics per finding, 59 agents): 20 confirmed, 8 rejected. Applied all 20, including turning the log level into an enum and recording the PHP-DI Fiber limit as R24.
+- Ran my own mutation test: 60 mutations, 4 survived, I added tests for the two real gaps, then 58 of 58 non-equivalent mutants were killed. Docs updated (FRAMEWORK 9.2, 4.9, D29, D30, R24, R25; plan; changelog).
+- You committed the first version of P1.5 as `aa1e919` and pushed it; CI ran green (21 s). I had wrongly said it was all uncommitted; corrected here.

@@ -12,6 +12,7 @@ use Raphp\Core\Config\InvalidConfig;
 use Raphp\Core\Config\PhpConfig;
 use Raphp\Core\Config\UiConfig;
 use Raphp\Core\Config\WorkerConfig;
+use Raphp\Core\Logging\LogLevel;
 
 final class ConfigLoaderTest extends TestCase
 {
@@ -25,9 +26,13 @@ final class ConfigLoaderTest extends TestCase
 
     protected function tearDown(): void
     {
-        $files = glob($this->directory . '/*');
-        foreach ($files === false ? [] : $files as $file) {
-            unlink($file);
+        $entries = scandir($this->directory);
+        foreach ($entries === false ? [] : $entries as $entry) {
+            if ($entry === '.' || $entry === '..') {
+                continue;
+            }
+
+            unlink($this->directory . '/' . $entry);
         }
 
         rmdir($this->directory);
@@ -69,6 +74,8 @@ final class ConfigLoaderTest extends TestCase
         return ['name' => 'acme/files', 'entry' => 'src/main.php'];
     }
 
+    // ---------------------------------------------------------------- valid manifests
+
     public function testAMinimalManifestGetsTheDefaults(): void
     {
         $config = (new ConfigLoader())->load($this->write(self::minimal()));
@@ -81,7 +88,7 @@ final class ConfigLoaderTest extends TestCase
         self::assertSame([], $config->libs);
         self::assertEquals(new PhpConfig(), $config->php);
         self::assertNull($config->build);
-        self::assertSame('info', $config->logLevel);
+        self::assertSame(LogLevel::Info, $config->logLevel);
         self::assertFalse($config->ipcTrace);
     }
 
@@ -93,23 +100,25 @@ final class ConfigLoaderTest extends TestCase
             'workers' => [
                 'main' => ['entry' => 'src/worker.php', 'pool' => 2],
                 'scan-2' => ['entry' => 'src/scan.php'],
+                'one' => ['entry' => 'src/one.php', 'pool' => 1],
             ],
             'ui' => ['enabled' => true, 'backend' => 'drawn'],
-            'libs' => ['libraphp' => '^0.1'],
+            'libs' => ['libraphp' => '^0.1', 'other.lib_2' => '>=1.0 <2.0'],
             'php' => [
                 'extensions' => ['ffi', 'pcntl', 'posix', 'sockets'],
-                'ini' => ['memory_limit' => '256M', 'opcache.enable' => true, 'precision' => 14, 'assert.exception' => false],
+                'ini' => ['memory_limit' => '256M', 'opcache.enable' => true, 'precision' => 14, 'assert.exception' => false, 'ratio' => 1.5],
             ],
             'build' => ['output' => 'dist/files', 'embedShim' => false],
         ]));
 
         self::assertEquals(new WorkerConfig('main', 'src/worker.php', 2), $config->workers['main']);
         self::assertEquals(new WorkerConfig('scan-2', 'src/scan.php', 1), $config->workers['scan-2']);
+        self::assertEquals(new WorkerConfig('one', 'src/one.php', 1), $config->workers['one']);
         self::assertEquals(new UiConfig(true, 'drawn'), $config->ui);
-        self::assertSame(['libraphp' => '^0.1'], $config->libs);
+        self::assertSame(['libraphp' => '^0.1', 'other.lib_2' => '>=1.0 <2.0'], $config->libs);
         self::assertSame(['ffi', 'pcntl', 'posix', 'sockets'], $config->php->extensions);
         self::assertSame(
-            ['memory_limit' => '256M', 'opcache.enable' => '1', 'precision' => '14', 'assert.exception' => '0'],
+            ['memory_limit' => '256M', 'opcache.enable' => '1', 'precision' => '14', 'assert.exception' => '0', 'ratio' => '1.5'],
             $config->php->ini,
         );
         self::assertEquals(new BuildConfig('dist/files', false), $config->build);
@@ -122,60 +131,66 @@ final class ConfigLoaderTest extends TestCase
         self::assertEquals(new BuildConfig('dist/app', true), $config->build);
     }
 
-    public function testEnvironmentVariablesOverrideTheFileAndTheDefaults(): void
+    public function testThePoolBoundariesAreOneAndTwoHundredAndFiftySix(): void
     {
-        $manifest = [...self::minimal(), 'ui' => ['enabled' => false, 'backend' => 'drawn']];
+        $load = fn(int $pool): int => (new ConfigLoader())->load($this->write([
+            ...self::minimal(),
+            'workers' => ['main' => ['entry' => 'w.php', 'pool' => $pool]],
+        ]))->workers['main']->pool;
 
-        $config = (new ConfigLoader())->load($this->write($manifest), [
-            'RAPHP_LOG_LEVEL' => 'DEBUG',
-            'RAPHP_IPC_TRACE' => 'true',
-            'RAPHP_UI_ENABLED' => '1',
-        ]);
-
-        self::assertSame('debug', $config->logLevel);
-        self::assertTrue($config->ipcTrace);
-        self::assertEquals(new UiConfig(true, 'drawn'), $config->ui);
+        self::assertSame(1, $load(1));
+        self::assertSame(256, $load(256));
     }
 
-    public function testTheEnvironmentCanSwitchOffTheUiTheFileTurnsOn(): void
+    public function testNoKeyInAnAcceptedConfigIsAnInteger(): void
     {
-        $manifest = [...self::minimal(), 'ui' => ['enabled' => true]];
+        $config = (new ConfigLoader())->load($this->write([
+            ...self::minimal(),
+            'workers' => ['w1' => ['entry' => 'w.php']],
+            'libs' => ['lib1' => '^1'],
+            'php' => ['ini' => ['x1' => 'a']],
+        ]));
 
-        $config = (new ConfigLoader())->load($this->write($manifest), ['RAPHP_UI_ENABLED' => 'off']);
-
-        self::assertFalse($config->ui->enabled);
+        foreach ([$config->workers, $config->libs, $config->php->ini] as $map) {
+            self::assertSame([], array_filter(array_keys($map), is_int(...)));
+        }
     }
 
-    public function testEmptyEnvironmentValuesCountAsUnset(): void
-    {
-        $config = (new ConfigLoader())->load($this->write(self::minimal()), [
-            'RAPHP_LOG_LEVEL' => '',
-            'RAPHP_IPC_TRACE' => '',
-            'RAPHP_UI_ENABLED' => '',
-        ]);
+    // ---------------------------------------------------------------- files and paths
 
-        self::assertSame('info', $config->logLevel);
-        self::assertFalse($config->ipcTrace);
-        self::assertFalse($config->ui->enabled);
+    public function testBasePathIsTheResolvedDirectoryWhenTheFileIsGivenRelatively(): void
+    {
+        $this->write(self::minimal());
+        $previous = getcwd();
+        self::assertNotFalse($previous);
+        chdir($this->directory);
+
+        try {
+            $config = (new ConfigLoader())->load('raphp.json');
+        } finally {
+            chdir($previous);
+        }
+
+        self::assertSame(realpath($this->directory), $config->basePath);
+        self::assertStringStartsWith('/', $config->basePath);
     }
 
-    public function testUnrelatedEnvironmentVariablesAreIgnored(): void
+    public function testBasePathFollowsASymlinkToTheRealDirectory(): void
     {
-        $config = (new ConfigLoader())->load($this->write(self::minimal()), ['PATH' => '/usr/bin', 'HOME' => '/root']);
+        $real = $this->directory . '/real';
+        mkdir($real);
+        file_put_contents($real . '/raphp.json', json_encode(self::minimal(), JSON_THROW_ON_ERROR));
+        $link = $this->directory . '/link.json';
+        symlink($real . '/raphp.json', $link);
 
-        self::assertSame('info', $config->logLevel);
-    }
+        try {
+            $config = (new ConfigLoader())->load($link);
+        } finally {
+            unlink($real . '/raphp.json');
+            rmdir($real);
+        }
 
-    public function testTheLoaderKeepsNoStateBetweenLoads(): void
-    {
-        $loader = new ConfigLoader();
-        $file = $this->write(self::minimal());
-
-        $first = $loader->load($file, ['RAPHP_LOG_LEVEL' => 'debug']);
-        $second = $loader->load($file);
-
-        self::assertSame('debug', $first->logLevel);
-        self::assertSame('info', $second->logLevel);
+        self::assertSame(realpath($this->directory) . '/real', $config->basePath);
     }
 
     public function testAMissingFileIsReported(): void
@@ -189,63 +204,326 @@ final class ConfigLoaderTest extends TestCase
         }
     }
 
+    public function testAStreamWrapperPathIsNotAccepted(): void
+    {
+        $file = $this->write(self::minimal());
+
+        try {
+            (new ConfigLoader())->load('file://' . $file);
+            self::fail('Expected InvalidConfig.');
+        } catch (InvalidConfig $exception) {
+            self::assertSame(['the file does not exist or is not readable'], $exception->problems());
+        }
+    }
+
+    public function testADirectoryIsNotAManifest(): void
+    {
+        try {
+            (new ConfigLoader())->load($this->directory);
+            self::fail('Expected InvalidConfig.');
+        } catch (InvalidConfig $exception) {
+            self::assertSame(['the file does not exist or is not readable'], $exception->problems());
+        }
+    }
+
+    public function testAnUnreadableFileIsReported(): void
+    {
+        if (posix_geteuid() === 0) {
+            self::markTestSkipped('root can read any file, so permissions cannot make it unreadable');
+        }
+
+        $file = $this->write(self::minimal());
+        chmod($file, 0o000);
+
+        try {
+            (new ConfigLoader())->load($file);
+            self::fail('Expected InvalidConfig.');
+        } catch (InvalidConfig $exception) {
+            self::assertSame(['the file does not exist or is not readable'], $exception->problems());
+        } finally {
+            chmod($file, 0o600);
+        }
+    }
+
+    public function testAnOversizedFileIsRejectedWithoutBeingParsed(): void
+    {
+        $problems = $this->problemsFor(str_repeat(' ', 1_048_577));
+
+        self::assertSame(['the file is larger than 1 MiB, which is far more than a manifest needs'], $problems);
+    }
+
+    public function testAFileOfExactlyTheSizeLimitIsStillRead(): void
+    {
+        $manifest = '{"name":"acme/files","entry":"a.php"}';
+
+        $config = (new ConfigLoader())->load($this->write($manifest . str_repeat(' ', 1_048_576 - strlen($manifest))));
+
+        self::assertSame('acme/files', $config->name);
+    }
+
+    public function testNestingUpToTheJsonDepthLimitIsParsedAndBeyondItIsRejected(): void
+    {
+        $nested = static fn(int $levels): string => '{"name":"acme/files","entry":"a.php","php":{"ini":{"x":'
+            . str_repeat('[', $levels) . str_repeat(']', $levels) . '}}}';
+
+        self::assertStringContainsString('php.ini.x: must be a string, number or boolean', implode("\n", $this->problemsFor($nested(60))));
+        self::assertStringContainsString('invalid JSON: Maximum stack depth exceeded', implode("\n", $this->problemsFor($nested(61))));
+    }
+
+    // ---------------------------------------------------------------- environment
+
+    public function testEnvironmentVariablesOverrideTheFileAndTheDefaults(): void
+    {
+        $manifest = [...self::minimal(), 'ui' => ['enabled' => false, 'backend' => 'drawn']];
+
+        $config = (new ConfigLoader())->load($this->write($manifest), [
+            'RAPHP_LOG_LEVEL' => 'DEBUG',
+            'RAPHP_IPC_TRACE' => 'true',
+            'RAPHP_UI_ENABLED' => '1',
+        ]);
+
+        self::assertSame(LogLevel::Debug, $config->logLevel);
+        self::assertTrue($config->ipcTrace);
+        self::assertEquals(new UiConfig(true, 'drawn'), $config->ui);
+    }
+
+    public function testTheEnvironmentCanSwitchOffTheUiTheFileTurnsOn(): void
+    {
+        $manifest = [...self::minimal(), 'ui' => ['enabled' => true]];
+
+        $config = (new ConfigLoader())->load($this->write($manifest), ['RAPHP_UI_ENABLED' => 'off']);
+
+        self::assertFalse($config->ui->enabled);
+    }
+
+    /**
+     * @return iterable<string, array{string, bool}>
+     */
+    public static function booleanSpellings(): iterable
+    {
+        foreach (['1', 'true', 'yes', 'on', 'TRUE', 'Yes', 'ON'] as $spelling) {
+            yield "true as {$spelling}" => [$spelling, true];
+        }
+
+        foreach (['0', 'false', 'no', 'off', 'FALSE', 'No', 'OFF'] as $spelling) {
+            yield "false as {$spelling}" => [$spelling, false];
+        }
+    }
+
+    #[DataProvider('booleanSpellings')]
+    public function testEveryDocumentedBooleanSpellingIsAccepted(string $spelling, bool $expected): void
+    {
+        $config = (new ConfigLoader())->load($this->write([...self::minimal(), 'ui' => ['enabled' => !$expected]]), [
+            'RAPHP_IPC_TRACE' => $spelling,
+            'RAPHP_UI_ENABLED' => $spelling,
+        ]);
+
+        self::assertSame($expected, $config->ipcTrace);
+        self::assertSame($expected, $config->ui->enabled);
+    }
+
+    /**
+     * @return iterable<string, array{string, LogLevel}>
+     */
+    public static function logLevelSpellings(): iterable
+    {
+        foreach (LogLevel::cases() as $level) {
+            yield $level->value => [$level->value, $level];
+            yield strtoupper($level->value) => [strtoupper($level->value), $level];
+            yield ucfirst($level->value) => [ucfirst($level->value), $level];
+        }
+    }
+
+    #[DataProvider('logLevelSpellings')]
+    public function testEveryLogLevelIsAcceptedInAnyCase(string $spelling, LogLevel $expected): void
+    {
+        $config = (new ConfigLoader())->load($this->write(self::minimal()), ['RAPHP_LOG_LEVEL' => $spelling]);
+
+        self::assertSame($expected, $config->logLevel);
+    }
+
+    public function testEmptyEnvironmentValuesCountAsUnset(): void
+    {
+        $config = (new ConfigLoader())->load($this->write(self::minimal()), [
+            'RAPHP_LOG_LEVEL' => '',
+            'RAPHP_IPC_TRACE' => '',
+            'RAPHP_UI_ENABLED' => '',
+        ]);
+
+        self::assertSame(LogLevel::Info, $config->logLevel);
+        self::assertFalse($config->ipcTrace);
+        self::assertFalse($config->ui->enabled);
+    }
+
+    public function testUnrelatedEnvironmentVariablesAreIgnored(): void
+    {
+        $config = (new ConfigLoader())->load($this->write(self::minimal()), ['PATH' => '/usr/bin', 'HOME' => '/root']);
+
+        self::assertSame(LogLevel::Info, $config->logLevel);
+    }
+
+    public function testTheLoaderKeepsNoStateBetweenLoads(): void
+    {
+        $loader = new ConfigLoader();
+        $file = $this->write(self::minimal());
+
+        $first = $loader->load($file, ['RAPHP_LOG_LEVEL' => 'debug']);
+        $second = $loader->load($file);
+
+        self::assertSame(LogLevel::Debug, $first->logLevel);
+        self::assertSame(LogLevel::Info, $second->logLevel);
+    }
+
+    public function testInvalidEnvironmentValuesAreReportedByVariableName(): void
+    {
+        $problems = $this->problemsFor(self::minimal(), [
+            'RAPHP_LOG_LEVEL' => 'loud',
+            'RAPHP_IPC_TRACE' => 'maybe',
+            'RAPHP_UI_ENABLED' => '2',
+        ]);
+
+        $all = implode("\n", $problems);
+        self::assertStringContainsString("RAPHP_LOG_LEVEL: 'loud' is not a log level; use one of: emergency, alert, critical, error, warning, notice, info, debug", $all);
+        self::assertStringContainsString("RAPHP_IPC_TRACE: 'maybe' is not a boolean; use one of: 1, true, yes, on, 0, false, no, off", $all);
+        self::assertStringContainsString("RAPHP_UI_ENABLED: '2' is not a boolean", $all);
+    }
+
+    public function testNonStringEnvironmentValuesAreReportedInsteadOfCrashing(): void
+    {
+        $problems = $this->problemsFor(self::minimal(), [
+            'RAPHP_IPC_TRACE' => 1,
+            'RAPHP_LOG_LEVEL' => ['debug'],
+            'RAPHP_UI_ENABLED' => true,
+        ]);
+
+        $all = implode("\n", $problems);
+        self::assertStringContainsString('RAPHP_IPC_TRACE: must be a string', $all);
+        self::assertStringContainsString('RAPHP_LOG_LEVEL: must be a string', $all);
+        self::assertStringContainsString('RAPHP_UI_ENABLED: must be a string', $all);
+    }
+
+    public function testEnvironmentValuesWithSurroundingWhitespaceAreRejected(): void
+    {
+        $problems = $this->problemsFor(self::minimal(), ['RAPHP_LOG_LEVEL' => "debug\n", 'RAPHP_IPC_TRACE' => ' true ']);
+
+        $all = implode("\n", $problems);
+        self::assertStringContainsString("RAPHP_LOG_LEVEL: 'debug\\n' is not a log level", $all);
+        self::assertStringContainsString("RAPHP_IPC_TRACE: ' true ' is not a boolean", $all);
+    }
+
+    public function testAnEnvironmentProblemIsStillReportedWhenTheFileIsMissing(): void
+    {
+        try {
+            (new ConfigLoader())->load($this->directory . '/missing.json', ['RAPHP_LOG_LEVEL' => 'loud']);
+            self::fail('Expected InvalidConfig.');
+        } catch (InvalidConfig $exception) {
+            self::assertCount(2, $exception->problems());
+        }
+    }
+
+    // ---------------------------------------------------------------- invalid manifests
+
     /**
      * @return iterable<string, array{array<string, mixed>|string, string}>
      */
     public static function invalidManifests(): iterable
     {
         $base = self::minimal();
+        $raw = static fn(string $sections): string => '{"name":"acme/files","entry":"a.php",' . $sections . '}';
 
         yield 'not JSON' => ['{nope', 'invalid JSON'];
         yield 'a JSON list' => ['[1, 2]', 'the top level must be a JSON object'];
         yield 'a JSON string' => ['"text"', 'the top level must be a JSON object'];
         yield 'an empty file' => ['', 'invalid JSON'];
+        yield 'a byte order mark' => ["\xEF\xBB\xBF{\"name\":\"acme/files\",\"entry\":\"a.php\"}", 'the file starts with a UTF-8 byte order mark'];
+
         yield 'missing name' => [['entry' => 'a.php'], 'name: is required'];
         yield 'missing entry' => [['name' => 'acme/files'], 'entry: is required'];
         yield 'name is not a string' => [['name' => 5, 'entry' => 'a.php'], 'name: must be a non-empty string'];
-        yield 'name has no vendor' => [['name' => 'files', 'entry' => 'a.php'], "name: must look like 'vendor/package'"];
-        yield 'name is upper case' => [['name' => 'Acme/Files', 'entry' => 'a.php'], "name: must look like 'vendor/package'"];
-        yield 'absolute entry' => [['name' => 'acme/files', 'entry' => '/etc/passwd'], 'entry: must be a clean relative path inside the project'];
-        yield 'entry leaves the project' => [['name' => 'acme/files', 'entry' => 'src/../../x.php'], 'entry: must be a clean relative path inside the project'];
+        yield 'name is empty' => [['name' => '', 'entry' => 'a.php'], 'name: must be a non-empty string'];
+        yield 'name is too long' => [['name' => 'a/' . str_repeat('b', 1030), 'entry' => 'a.php'], 'name: must be at most 1024 bytes'];
         yield 'unknown top-level key' => [[...$base, 'colour' => 'red'], 'colour: unknown key; allowed here: name, entry'];
-        yield 'workers is a list' => [[...$base, 'workers' => [1]], 'workers: must be a JSON object'];
+
+        foreach (['files', 'Acme/Files', '-acme/files', '.acme/files', '_acme/files', 'acme/-files', 'acme/.files', 'acme/_files', 'acme/files/extra', '/files', 'acme/', 'acme//files', "acme/files\n", 'acme/fi les'] as $name) {
+            yield 'name ' . json_encode($name) => [['name' => $name, 'entry' => 'a.php'], "name: must look like 'vendor/package'"];
+        }
+
+        $badPaths = ['/etc/passwd', 'src/../../x.php', '../x.php', './a.php', '.', '..', 'src//a.php', 'src/', 'src\\x.php', "src/a\0b.php", "src/a\x01b.php", "src/a\x1fb.php", "src/a\x7fb.php", "src/a\tb.php", "src/a\rb.php", "src/a\nb.php", "src/a\u{0085}b.php"];
+        foreach ($badPaths as $path) {
+            yield 'entry ' . json_encode($path) => [['name' => 'acme/files', 'entry' => $path], 'entry: must be a clean relative path inside the project'];
+            yield 'worker entry ' . json_encode($path) => [[...$base, 'workers' => ['main' => ['entry' => $path]]], 'workers.main.entry: must be a clean relative path inside the project'];
+            yield 'build output ' . json_encode($path) => [[...$base, 'build' => ['output' => $path]], 'build.output: must be a clean relative path inside the project'];
+        }
+
+        yield 'entry is too long' => [['name' => 'acme/files', 'entry' => 'a/' . str_repeat('b', 1030)], 'entry: must be at most 1024 bytes'];
+
+        yield 'workers is a list' => [[...$base, 'workers' => [1]], 'workers: must be a JSON object keyed by name'];
+        yield 'workers is null' => [[...$base, 'workers' => null], 'workers: must be a JSON object'];
         yield 'worker is not an object' => [[...$base, 'workers' => ['main' => 'x']], 'workers.main: must be a JSON object'];
-        yield 'worker name is upper case' => [[...$base, 'workers' => ['Main' => ['entry' => 'w.php']]], 'workers.Main: the worker name must start with a lowercase letter'];
+        yield 'worker is null' => [[...$base, 'workers' => ['main' => null]], 'workers.main: must be a JSON object'];
         yield 'worker without entry' => [[...$base, 'workers' => ['main' => []]], 'workers.main.entry: is required'];
-        yield 'worker pool is zero' => [[...$base, 'workers' => ['main' => ['entry' => 'w.php', 'pool' => 0]]], 'workers.main.pool: must be an integer from 1 to 256'];
-        yield 'worker pool is a string' => [[...$base, 'workers' => ['main' => ['entry' => 'w.php', 'pool' => '2']]], 'workers.main.pool: must be an integer from 1 to 256'];
         yield 'worker unknown key' => [[...$base, 'workers' => ['main' => ['entry' => 'w.php', 'colour' => 1]]], 'workers.main.colour: unknown key'];
+        yield 'worker named with only digits' => [$raw('"workers":{"0":{"entry":"w.php"}}'), 'workers: must be a JSON object keyed by name (a name cannot be only digits)'];
+        yield 'worker named 7' => [$raw('"workers":{"7":{"entry":"w.php"}}'), 'workers.7: the worker name must start with a lowercase letter'];
+
+        foreach (['Main', '9w', '-w', '_w', 'w w', 'w.x', "main\n"] as $name) {
+            yield 'worker name ' . json_encode($name) => [[...$base, 'workers' => [$name => ['entry' => 'w.php']]], 'the worker name must start with a lowercase letter'];
+        }
+
+        foreach ([0, -1, 257, 99999999999, '2', 2.5, true, null] as $pool) {
+            yield 'worker pool ' . json_encode($pool) => [[...$base, 'workers' => ['main' => ['entry' => 'w.php', 'pool' => $pool]]], 'workers.main.pool: must be an integer from 1 to 256'];
+        }
+
         yield 'ui is not an object' => [[...$base, 'ui' => 'yes'], 'ui: must be a JSON object'];
+        yield 'ui is null' => [[...$base, 'ui' => null], 'ui: must be a JSON object'];
         yield 'ui enabled is not a boolean' => [[...$base, 'ui' => ['enabled' => 'yes']], 'ui.enabled: must be true or false'];
         yield 'ui unknown key' => [[...$base, 'ui' => ['theme' => 'dark']], 'ui.theme: unknown key'];
-        yield 'lib constraint is not a string' => [[...$base, 'libs' => ['libraphp' => 1]], 'libs.libraphp: the version constraint must be a non-empty string'];
-        yield 'lib name is upper case' => [[...$base, 'libs' => ['LibRaphp' => '^1']], 'libs.LibRaphp: the library name may use only'];
-        yield 'php extensions is not a list' => [[...$base, 'php' => ['extensions' => ['a' => 'ffi']]], 'php.extensions: must be a list of extension names'];
-        yield 'php extension is upper case' => [[...$base, 'php' => ['extensions' => ['FFI']]], 'php.extensions[0]: must be a lowercase extension name'];
-        yield 'php ini value is an array' => [[...$base, 'php' => ['ini' => ['memory_limit' => ['1G']]]], 'php.ini.memory_limit: must be a string, number or boolean'];
-        yield 'build without output' => [[...$base, 'build' => ['embedShim' => true]], 'build.output: is required'];
-        yield 'build output leaves the project' => [[...$base, 'build' => ['output' => '../dist']], 'build.output: must be a clean relative path inside the project'];
-        yield 'build embedShim is not a boolean' => [[...$base, 'build' => ['output' => 'dist', 'embedShim' => 1]], 'build.embedShim: must be true or false'];
+        yield 'ui backend is empty' => [[...$base, 'ui' => ['backend' => '']], 'ui.backend: must be a non-empty string'];
+        foreach (['Drawn', '9x', '-x', 'x y', "drawn\n"] as $backend) {
+            yield 'ui backend ' . json_encode($backend) => [[...$base, 'ui' => ['backend' => $backend]], 'ui.backend: must start with a lowercase letter'];
+        }
 
-        // Regressions found by probing the loader with hostile input.
-        yield 'name with a trailing newline' => [['name' => "acme/files\n", 'entry' => 'a.php'], "name: must look like 'vendor/package'"];
-        yield 'worker name with a trailing newline' => [[...$base, 'workers' => ["main\n" => ['entry' => 'w.php']]], 'the worker name must start with a lowercase letter'];
-        yield 'lib name with a trailing newline' => [[...$base, 'libs' => ["libraphp\n" => '^1']], 'the library name may use only'];
-        yield 'extension with a trailing newline' => [[...$base, 'php' => ['extensions' => ["ffi\n"]]], 'php.extensions[0]: must be a lowercase extension name'];
-        yield 'entry with an embedded newline' => [['name' => 'acme/files', 'entry' => "src/a\nb.php"], 'entry: must be a clean relative path inside the project'];
-        yield 'entry with a backslash' => [['name' => 'acme/files', 'entry' => 'src\\..\\x.php'], 'entry: must be a clean relative path inside the project'];
-        yield 'entry with a dot segment' => [['name' => 'acme/files', 'entry' => './a.php'], 'entry: must be a clean relative path inside the project'];
-        yield 'entry that is a dot' => [['name' => 'acme/files', 'entry' => '.'], 'entry: must be a clean relative path inside the project'];
-        yield 'entry with an empty segment' => [['name' => 'acme/files', 'entry' => 'src//a.php'], 'entry: must be a clean relative path inside the project'];
-        yield 'entry ending in a slash' => [['name' => 'acme/files', 'entry' => 'src/'], 'entry: must be a clean relative path inside the project'];
-        yield 'workers is null' => [[...$base, 'workers' => null], 'workers: must be a JSON object'];
-        yield 'ui is null' => [[...$base, 'ui' => null], 'ui: must be a JSON object'];
         yield 'libs is null' => [[...$base, 'libs' => null], 'libs: must be a JSON object'];
+        yield 'libs is a list' => [[...$base, 'libs' => ['^1']], 'libs: must be a JSON object keyed by name'];
+        yield 'lib named 0' => [$raw('"libs":{"0":"^1"}'), 'libs: must be a JSON object keyed by name (a name cannot be only digits)'];
+        yield 'lib named 1' => [$raw('"libs":{"1":"^1"}'), 'libs.1: the library name must start with a lowercase letter'];
+        yield 'lib named -1' => [$raw('"libs":{"-1":"^1"}'), 'libs.-1: the library name must start with a lowercase letter'];
+        foreach (['LibRaphp', '9lib', '-lib', '.lib', '_lib', 'a b', "libraphp\n"] as $name) {
+            yield 'lib name ' . json_encode($name) => [[...$base, 'libs' => [$name => '^1']], 'the library name must start with a lowercase letter'];
+        }
+
+        yield 'lib constraint is a number' => [[...$base, 'libs' => ['libraphp' => 1]], 'libs.libraphp: the version constraint must be a non-empty string'];
+        yield 'lib constraint is empty' => [[...$base, 'libs' => ['libraphp' => '']], 'libs.libraphp: the version constraint must be a non-empty string'];
+        yield 'lib constraint has a newline' => [[...$base, 'libs' => ['libraphp' => "^1\n"]], 'libs.libraphp: must not contain control characters'];
+        yield 'lib constraint has an escape character' => [[...$base, 'libs' => ['libraphp' => "^1\x1b[31m"]], 'libs.libraphp: must not contain control characters'];
+        yield 'lib constraint has a C1 control' => [[...$base, 'libs' => ['libraphp' => "^1\u{0085}"]], 'libs.libraphp: must not contain control characters'];
+        yield 'lib constraint is too long' => [[...$base, 'libs' => ['libraphp' => str_repeat('1', 1025)]], 'libs.libraphp: must be at most 1024 bytes'];
+
         yield 'php is null' => [[...$base, 'php' => null], 'php: must be a JSON object'];
+        yield 'php unknown key' => [[...$base, 'php' => ['colour' => 1]], 'php.colour: unknown key; allowed here: extensions, ini'];
+        yield 'php extensions is not a list' => [[...$base, 'php' => ['extensions' => ['a' => 'ffi']]], 'php.extensions: must be a list of extension names'];
+        yield 'php extensions is null' => [[...$base, 'php' => ['extensions' => null]], 'php.extensions: must be a list of extension names'];
+        foreach (['FFI', 'ffi-x', 'ffi.x', 'ffi x', '', "ffi\n", 5, null, ['ffi']] as $extension) {
+            yield 'php extension ' . json_encode($extension) => [[...$base, 'php' => ['extensions' => [$extension]]], 'php.extensions[0]: must be a lowercase extension name'];
+        }
+
         yield 'php ini is null' => [[...$base, 'php' => ['ini' => null]], 'php.ini: must be a JSON object'];
+        yield 'php ini is a list' => [[...$base, 'php' => ['ini' => ['x']]], 'php.ini: must be a JSON object keyed by name'];
+        yield 'php ini named 0' => [$raw('"php":{"ini":{"0":"x"}}'), 'php.ini: must be a JSON object keyed by name (a name cannot be only digits)'];
+        yield 'php ini named 1' => [$raw('"php":{"ini":{"1":"x"}}'), 'php.ini.1: the setting name must start with a letter'];
+        yield 'php ini named -1' => [$raw('"php":{"ini":{"-1":"x"}}'), 'php.ini.-1: the setting name must start with a letter'];
+        yield 'php ini name with a space' => [[...$base, 'php' => ['ini' => ['bad name' => 'x']]], 'php.ini.bad name: the setting name must start with a letter'];
+        yield 'php ini name with a dash' => [[...$base, 'php' => ['ini' => ['bad-name' => 'x']]], 'php.ini.bad-name: the setting name must start with a letter'];
+        yield 'php ini value is an array' => [[...$base, 'php' => ['ini' => ['memory_limit' => ['1G']]]], 'php.ini.memory_limit: must be a string, number or boolean'];
+        yield 'php ini value is null' => [[...$base, 'php' => ['ini' => ['memory_limit' => null]]], 'php.ini.memory_limit: must be a string, number or boolean'];
+        yield 'php ini value has a newline' => [[...$base, 'php' => ['ini' => ['memory_limit' => "1G\n"]]], 'php.ini.memory_limit: must not contain control characters'];
+        yield 'php ini value is too long' => [[...$base, 'php' => ['ini' => ['memory_limit' => str_repeat('1', 1025)]]], 'php.ini.memory_limit: must be at most 1024 bytes'];
+
         yield 'build is null' => [[...$base, 'build' => null], 'build: must be a JSON object'];
-        yield 'worker pool above the maximum' => [[...$base, 'workers' => ['main' => ['entry' => 'w.php', 'pool' => 257]]], 'workers.main.pool: must be an integer from 1 to 256'];
-        yield 'a byte order mark' => ["\xEF\xBB\xBF{\"name\":\"acme/files\",\"entry\":\"a.php\"}", 'the file starts with a UTF-8 byte order mark'];
+        yield 'build is not an object' => [[...$base, 'build' => 'dist'], 'build: must be a JSON object'];
+        yield 'build without output' => [[...$base, 'build' => ['embedShim' => true]], 'build.output: is required'];
+        yield 'build embedShim is not a boolean' => [[...$base, 'build' => ['output' => 'dist', 'embedShim' => 1]], 'build.embedShim: must be true or false'];
+        yield 'build unknown key' => [[...$base, 'build' => ['output' => 'dist', 'colour' => 1]], 'build.colour: unknown key; allowed here: output, embedShim'];
     }
 
     /**
@@ -286,85 +564,72 @@ final class ConfigLoaderTest extends TestCase
         }
     }
 
-    public function testInvalidEnvironmentValuesAreReportedByVariableName(): void
-    {
-        $problems = $this->problemsFor(self::minimal(), [
-            'RAPHP_LOG_LEVEL' => 'loud',
-            'RAPHP_IPC_TRACE' => 'maybe',
-            'RAPHP_UI_ENABLED' => '2',
-        ]);
+    // ---------------------------------------------------------------- bounded and safe output
 
-        $all = implode("\n", $problems);
-        self::assertStringContainsString("RAPHP_LOG_LEVEL: 'loud' is not a log level; use one of: emergency", $all);
-        self::assertStringContainsString("RAPHP_IPC_TRACE: 'maybe' is not a boolean", $all);
-        self::assertStringContainsString("RAPHP_UI_ENABLED: '2' is not a boolean", $all);
-    }
-
-    public function testAnEnvironmentProblemIsStillReportedWhenTheFileIsMissing(): void
+    public function testTheProblemListIsCappedAndTheRestIsCounted(): void
     {
+        $manifest = self::minimal();
+        for ($index = 0; $index < 200; $index++) {
+            $manifest["key{$index}"] = 1;
+        }
+
         try {
-            (new ConfigLoader())->load($this->directory . '/missing.json', ['RAPHP_LOG_LEVEL' => 'loud']);
+            (new ConfigLoader())->load($this->write($manifest));
             self::fail('Expected InvalidConfig.');
         } catch (InvalidConfig $exception) {
-            self::assertCount(2, $exception->problems());
+            self::assertCount(50, $exception->problems());
+            self::assertStringEndsWith("\n  ... and 150 more problems not shown", $exception->getMessage());
         }
     }
 
-    public function testThePoolMaximumItselfIsAccepted(): void
+    public function testASingleOmittedProblemIsNotPluralised(): void
     {
-        $config = (new ConfigLoader())->load($this->write([
-            ...self::minimal(),
-            'workers' => ['main' => ['entry' => 'w.php', 'pool' => ConfigLoader::MAX_POOL]],
-        ]));
+        $manifest = self::minimal();
+        for ($index = 0; $index < 51; $index++) {
+            $manifest["key{$index}"] = 1;
+        }
 
-        self::assertSame(ConfigLoader::MAX_POOL, $config->workers['main']->pool);
+        try {
+            (new ConfigLoader())->load($this->write($manifest));
+            self::fail('Expected InvalidConfig.');
+        } catch (InvalidConfig $exception) {
+            self::assertStringEndsWith("\n  ... and 1 more problem not shown", $exception->getMessage());
+        }
     }
 
-    public function testAnOversizedFileIsRejectedWithoutBeingParsed(): void
+    public function testExactlyFiftyProblemsOmitNothing(): void
     {
-        $problems = $this->problemsFor(str_repeat(' ', ConfigLoader::MAX_BYTES + 1));
+        $manifest = self::minimal();
+        for ($index = 0; $index < 50; $index++) {
+            $manifest["key{$index}"] = 1;
+        }
 
-        self::assertSame(['the file is larger than 1 MiB, which is far more than a manifest needs'], $problems);
+        try {
+            (new ConfigLoader())->load($this->write($manifest));
+            self::fail('Expected InvalidConfig.');
+        } catch (InvalidConfig $exception) {
+            self::assertCount(50, $exception->problems());
+            self::assertStringNotContainsString('more problem', $exception->getMessage());
+        }
     }
 
-    public function testAFileAtTheSizeLimitIsStillRead(): void
+    public function testAHugeKeyCannotInflateTheMessage(): void
     {
-        $padding = str_repeat(' ', ConfigLoader::MAX_BYTES - strlen('{"name":"acme/files","entry":"a.php"}'));
-
-        $config = (new ConfigLoader())->load($this->write('{"name":"acme/files","entry":"a.php"}' . $padding));
-
-        self::assertSame('acme/files', $config->name);
+        try {
+            (new ConfigLoader())->load($this->write([...self::minimal(), str_repeat('k', 100_000) => 1]));
+            self::fail('Expected InvalidConfig.');
+        } catch (InvalidConfig $exception) {
+            self::assertLessThan(1_000, strlen($exception->getMessage()));
+            self::assertStringContainsString('...: unknown key', $exception->getMessage());
+        }
     }
 
-    public function testErrorMessagesEscapeControlCharactersSoANewlineCannotHide(): void
+    public function testAMultibyteKeyIsCutOnACharacterBoundary(): void
     {
-        $problems = $this->problemsFor(['name' => "acme/files\n", 'entry' => 'a.php']);
+        $problems = $this->problemsFor([...self::minimal(), str_repeat('é', 100) => 1]);
 
-        self::assertStringContainsString("got 'acme/files\\n'", implode("\n", $problems));
-        self::assertCount(1, $problems);
-    }
-
-    public function testNonStringEnvironmentValuesAreReportedInsteadOfCrashing(): void
-    {
-        $problems = $this->problemsFor(self::minimal(), [
-            'RAPHP_IPC_TRACE' => 1,
-            'RAPHP_LOG_LEVEL' => ['debug'],
-            'RAPHP_UI_ENABLED' => true,
-        ]);
-
-        $all = implode("\n", $problems);
-        self::assertStringContainsString('RAPHP_IPC_TRACE: must be a string', $all);
-        self::assertStringContainsString('RAPHP_LOG_LEVEL: must be a string', $all);
-        self::assertStringContainsString('RAPHP_UI_ENABLED: must be a string', $all);
-    }
-
-    public function testEnvironmentValuesWithSurroundingWhitespaceAreRejected(): void
-    {
-        $problems = $this->problemsFor(self::minimal(), ['RAPHP_LOG_LEVEL' => "debug\n", 'RAPHP_IPC_TRACE' => ' true ']);
-
-        $all = implode("\n", $problems);
-        self::assertStringContainsString("RAPHP_LOG_LEVEL: 'debug\\n' is not a log level", $all);
-        self::assertStringContainsString("RAPHP_IPC_TRACE: ' true ' is not a boolean", $all);
+        self::assertSame(1, preg_match('//u', implode("\n", $problems)), 'the shortened key must stay valid UTF-8');
+        self::assertStringStartsWith(str_repeat('é', 80) . '...: unknown key', $problems[0]);
     }
 
     public function testControlCharactersInUserKeysCannotReachTheErrorOutput(): void
@@ -381,5 +646,96 @@ final class ConfigLoaderTest extends TestCase
         }
 
         self::assertStringContainsString('evil\\033[31m\\nkey: unknown key', implode("\n", $problems));
+    }
+
+    public function testC1ControlCharactersInKeysAreEscaped(): void
+    {
+        $problems = $this->problemsFor([...self::minimal(), "a\u{0085}b" => 1, "c\u{009b}d" => 1]);
+
+        $all = implode("\n", $problems);
+        self::assertStringContainsString('a\\u0085b: unknown key', $all);
+        self::assertStringContainsString('c\\u009bd: unknown key', $all);
+        self::assertSame(0, preg_match('/\xC2[\x80-\x9f]/', $all));
+    }
+
+    public function testTheFilePathInTheMessageIsEscaped(): void
+    {
+        try {
+            (new ConfigLoader())->load($this->directory . "/evil\nname\e[31m.json");
+            self::fail('Expected InvalidConfig.');
+        } catch (InvalidConfig $exception) {
+            self::assertSame(1, substr_count($exception->getMessage(), "\n"), 'only the line break after the header may remain');
+            self::assertStringContainsString('evil\\nname\\033[31m.json', $exception->getMessage());
+        }
+    }
+
+    public function testAnInvalidUtf8FilePathIsEscapedToValidUtf8(): void
+    {
+        try {
+            (new ConfigLoader())->load($this->directory . "/missing-\xff.json");
+            self::fail('Expected InvalidConfig.');
+        } catch (InvalidConfig $exception) {
+            self::assertSame(1, preg_match('//u', $exception->getMessage()), 'the message must be valid UTF-8');
+            self::assertStringContainsString('missing-\\xff.json', $exception->getMessage());
+        }
+    }
+
+    public function testQuotedValuesEscapeBackslashesSoAnEscapeCannotBeForged(): void
+    {
+        $problems = $this->problemsFor(['name' => 'a\\nb/c', 'entry' => 'a.php']);
+
+        self::assertStringContainsString("got 'a\\\\nb/c'", implode("\n", $problems));
+    }
+
+    public function testErrorMessagesEscapeControlCharactersInValuesSoANewlineCannotHide(): void
+    {
+        $problems = $this->problemsFor(['name' => "acme/files\n", 'entry' => 'a.php']);
+
+        self::assertStringContainsString("got 'acme/files\\n'", implode("\n", $problems));
+        self::assertCount(1, $problems);
+    }
+
+    public function testAHugeQuotedValueIsShortened(): void
+    {
+        $problems = $this->problemsFor(['name' => str_repeat('A', 500), 'entry' => 'a.php']);
+
+        self::assertLessThan(400, strlen($problems[0]));
+        self::assertStringContainsString("AAAA...'", $problems[0]);
+    }
+
+    public function testAStringOfExactlyTheLengthLimitIsAccepted(): void
+    {
+        $entry = str_repeat('a', 1024);
+
+        $config = (new ConfigLoader())->load($this->write(['name' => 'acme/files', 'entry' => $entry]));
+
+        self::assertSame($entry, $config->entry);
+    }
+
+    public function testEveryControlCharacterInAKeyIsEscapedIncludingNulUnitSeparatorAndDel(): void
+    {
+        $problems = $this->problemsFor([
+            ...self::minimal(),
+            "nul\0key" => 1,
+            "us\x1fkey" => 1,
+            "del\x7fkey" => 1,
+            "tab\tkey" => 1,
+            "cr\rkey" => 1,
+        ]);
+
+        $all = implode("\n", $problems);
+        self::assertSame(0, preg_match('/[\x00-\x09\x0b-\x1f\x7f]/', $all), 'a raw control character reached the output');
+        self::assertStringContainsString('nul\\000key: unknown key', $all);
+        self::assertStringContainsString('us\\037key: unknown key', $all);
+        self::assertStringContainsString('del\\177key: unknown key', $all);
+        self::assertStringContainsString('tab\\tkey: unknown key', $all);
+        self::assertStringContainsString('cr\\rkey: unknown key', $all);
+    }
+
+    public function testDelAndNulInQuotedValuesAreEscaped(): void
+    {
+        $problems = $this->problemsFor(['name' => "acme/f\x7f\0", 'entry' => 'a.php']);
+
+        self::assertStringContainsString("got 'acme/f\\177\\000'", implode("\n", $problems));
     }
 }

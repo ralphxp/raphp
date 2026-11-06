@@ -251,10 +251,10 @@ Rules:
 | Need | PHP idiom | Raphp plan |
 |---|---|---|
 | Notifications and observers | PSR-14 event dispatcher | Listeners may suspend. They are invoked in order within the dispatching Fiber. |
-| Wiring services | PSR-11 container, constructor injection | No facades (O9). Default container implementation chosen in Phase 1. |
-| Logging | PSR-3 | Monolog as the default implementation. Worker logs are aggregated at the master (14). |
-| Configuration | Typed config objects | Loaded from `raphp.json` plus environment. No global `config()` helper. |
-| Time | PSR-20 clock | For wall-clock timestamps and testable "what time is it" logic (injected, so tests control it). Elapsed-time measurement uses a monotonic source (`hrtime(true)` or `Amp\now()`), because wall-clock time can step. Timers use Amp's `delay()`. **[Proposed]** |
+| Wiring services | PSR-11 container, constructor injection | PHP-DI 7 (D24), wired only in `Raphp\Core\Container\ContainerFactory`. No facades (O9). **Construction must not suspend a Fiber:** PHP-DI's circular-dependency guard is kept per container, not per Fiber (verified with 7.1.1, R24), so do asynchronous initialisation in a separate step after the container is built. |
+| Logging | PSR-3 | Monolog (`Raphp\Core\Logging\LoggerFactory`). One line per record on stderr, timestamps in UTC taken from the container's PSR-20 clock, level an enum (`Raphp\Core\Logging\LogLevel`, D30). Worker logs are aggregated at the master (14). |
+| Configuration | Typed config objects | Loaded from `raphp.json` plus environment by `Raphp\Core\Config\ConfigLoader` (rules in 9.2). No global `config()` helper. |
+| Time | PSR-20 clock | For wall-clock timestamps and testable "what time is it" logic (injected, so tests control it). Elapsed-time measurement uses a monotonic source (`hrtime(true)` or `Amp\now()`), because wall-clock time can step. Timers use Amp's `delay()`. The container's logger takes its time from the same clock, in UTC. **[Proposed]** |
 | Streams and async iteration | `amphp/pipeline` (`Pipeline`, `ConcurrentIterator`) and byte streams | Used for progress streams and multi-value results. |
 | Retry, backoff, circuit breaker | Small value-object policies | A `RetryPolicy` in Raphp, applied through middleware. |
 | Resource cleanup | `try`/`finally`, Amp `Closable` | Never rely on destructors for correctness. |
@@ -564,6 +564,18 @@ From day one every widget has a stable id, a semantic role and an optional label
 }
 ```
 
+**Rules and environment overrides** **[Proposed, D29, implemented and tested in P1.5]**
+
+`Raphp\Core\Config\ConfigLoader` enforces these rules. It reports every problem it finds, together, capped at 50 with a count of the rest.
+- **Strict keys.** An unknown key at any level is an error. An explicit `null` is never treated as "absent": it is rejected.
+- **Names.** `name` is `vendor/package` (lowercase letters, digits, `.`, `_`, `-`). Worker names, library names and `ui.backend` start with a lowercase letter. ini setting names start with a letter or `_`. Extension names are lowercase letters, digits and `_`. No name may be only digits, because PHP turns such array keys into integers.
+- **Paths** (`entry`, a worker's `entry`, `build.output`) must be clean relative paths inside the project: no leading `/`, no `.`, `..` or empty segment, no backslash, no control character.
+- **Limits** (guards against accidents, not design limits): the file at most 1 MiB; JSON nesting within PHP's depth of 64; each string at most 1024 bytes; a worker pool from 1 to 256. Strings may not contain control characters.
+- **The file** is resolved once with `realpath()` and read from that path, so the checks and the read see the same real local file. Stream wrappers such as `file://` and `phar://` are rejected. A UTF-8 byte order mark is rejected with a clear message. `basePath` is the absolute directory of the resolved file.
+- **Environment overrides.** `RAPHP_LOG_LEVEL` (a PSR-3 level name, any case, default `info`), `RAPHP_IPC_TRACE` and `RAPHP_UI_ENABLED` (booleans: `1`, `true`, `yes`, `on` or `0`, `false`, `no`, `off`, any case). `RAPHP_UI_ENABLED` overrides `ui.enabled` from the file; the other two exist only in the environment. An empty value counts as unset, and any other invalid value is an error. The loader never reads global state: the entry point passes `getenv()`.
+- **Output safety.** Error messages escape control characters (including DEL and the C1 range), shorten long keys and values, and escape the file path, so text written in a manifest cannot change how an error is displayed.
+- **Known limitation (R25).** If a JSON object repeats a key, PHP keeps the last one without a warning. Detecting that needs a custom JSON parser.
+
 ### 9.3 Native libs **[Proposed]**
 Prebuilt `libraphp` per architecture is stored under `~/.local/share/rlm/libs/<name>/<version>/`. `rlm.lock` records versions and sha256. The runtime loads native libs only from a verified store path and never relies on `LD_LIBRARY_PATH`.
 
@@ -636,6 +648,7 @@ Single file (shim embedded) or a bundle directory (binary plus `lib/`). The size
 - Structured logs. Worker stdout/stderr and log events are aggregated at the master with the worker name and a level.
 - Envelope may carry an optional `trace` id propagated through calls. **[Proposed]**
 - `RAPHP_IPC_TRACE=1` logs every IPC message.
+- `RAPHP_LOG_LEVEL` sets the log level: a PSR-3 level name, any case, default `info`. Logs are one line per record on stderr with UTC timestamps (4.9, 9.2).
 - Debuggers: Xdebug with multiple processes needs documented setup.
 - Crash reports: master records worker exit status and the last N log lines. How the exit status is collected and how worker stdout and stderr are drained is not yet specified (R18).
 
@@ -668,11 +681,13 @@ Single file (shim embedded) or a bundle directory (binary plus `lib/`). The size
 | D21 | Build the Rust shim against an old glibc (for example `cargo-zigbuild` with a `.2.17` target, or an old-distro container) so the shim does not raise the distributable floor | Decided (approved by you on 2026-11-06) | F14, R23 (7.9). The mechanism is chosen and verified in P3.1 and P6.1 |
 | D22 | `niphy` **was** the code name, until the rename on 2026-11-06 (D28). The public name is **Raphp** (D27). Nothing was ever published under the code name. | Decided | History: the code name appeared in the `Niphy\` namespace, `libniphy`, `niphy.json`, `NIPHY_*` variables, the C symbol prefix, and the acronym `nlm` (niphy libs manager) |
 | D23 | **PHP floor: 8.5 or newer** (`php >= 8.5`). CI runs on PHP 8.5 for now, and newer versions are added as they ship. PHPUnit 13 (needs PHP 8.5.12 or newer) is therefore usable, and the floor equals the managed PHP build. | Decided (P1.1) | You confirmed "8.5+". PHP 8.3 active support ended 31 Dec 2025, 8.4 ends 31 Dec 2026, 8.5 ends 31 Dec 2027 (php.net, 2026-11-06) |
-| D24 | **Container: PHP-DI 7.** The core depends only on `psr/container`. | Decided (P1.1) | PHP-DI 7.1.1 requires PHP 8.0 or newer. Autowiring fits constructor injection (O9) |
+| D24 | **Container: PHP-DI 7.** The core depends only on `psr/container`. | Decided (P1.1) | PHP-DI 7.1.1 requires PHP 8.0 or newer. Autowiring fits constructor injection (O9). Verified in P1.5 with 7.1.1: its circular-dependency guard is not Fiber-aware, so construction must not suspend (R24). If that rule becomes too limiting, revisit D24 (alternatives: resolve services before the loop starts, or a Fiber-aware wrapper) |
 | D25 | **Formatter: PHP-CS-Fixer** with the `@PER-CS3.0` rule set, pinned so a tool update cannot silently change the rules. | Decided (P1.1) | The rule sets `@PER-CS`, `@PER-CS1.0` and `@PER-CS3.0` exist in PHP-CS-Fixer 3.95.28. The `@PER-CS3.0` name is confirmed there; the exact pin is checked in P1.3 |
 | D26 | **Copyright holder: Codizium.** The MIT `LICENSE` reads "Copyright (c) 2026 Codizium". | Decided (P1.1) | The composer vendor name stays a placeholder (`raphp/raphp`), per D28 |
 | D27 | **Public name: Raphp** (Ralph PHP, pronounced "raf-pee"). `niphy` was the code name until the rename (D22, D28). | Decided | Chosen by you. On 2026-11-06 `raphp` is free on crates.io, npm and Packagist; a GitHub user named `raphp` already exists and is not yours (your account is `ralphxp`, the repository is `ralphxp/raphp`; Composer vendor names are independent of GitHub handles). The acronym for the CLI was decided with the rename: `rlm` (Raphp libs manager), D28 |
 | D28 | **Rename done:** code name `niphy` becomes Raphp. Namespace `Raphp\`, `libraphp`, `raphp.json`, `RAPHP_*` variables, C prefix `raphp_`, CLI `nlm` becomes `rlm` (Raphp libs manager), directory `nlm/` becomes `rlm/`, Composer placeholder `raphp/raphp`. Spike code under `spikes/` keeps the old names. | Decided | Owner accepted the lead's recommendation for the rename and for `rlm`. Date: 2026-11-06 |
+| D29 | **Manifest and environment rules** (9.2): strict keys, name patterns, clean relative paths, limits (1 MiB file, worker pool 1 to 256, strings 1024 bytes, 50 problems shown), and the environment overrides `RAPHP_LOG_LEVEL`, `RAPHP_IPC_TRACE` and `RAPHP_UI_ENABLED`. | Proposed (implemented and tested in P1.5, needs your approval) | The limits are guards against accidents and are my numbers, not measured ones |
+| D30 | **The log level is an enum** (`Raphp\Core\Logging\LogLevel`, the eight PSR-3 levels) held by `Config`. The logger writes UTC timestamps and takes its time from the PSR-20 clock. | Proposed (follows 4.3 and the PSR-20 choice) | The P1.5 review found that a string level broke the "enums instead of string constants" rule. Monolog 3.12.1 supports a clock and a timezone natively |
 
 The questions table in section 17 is the record for O2, O3, O4, O5 and O7; they have no separate D rows.
 
@@ -705,6 +720,8 @@ The questions table in section 17 is the record for O2, O3, O4, O5 and O7; they 
 | R21 | Hot reload (5.7) covers worker code only, while most edits land in master code; reload versus crash accounting is undefined | Not assessed / Not assessed | None yet. Phase 5 (`rlm dev`) must define it | **Open** |
 | R22 | `SO_PEERCRED` is not exposed by PHP's sockets extension here, so the secondary path-socket authentication is unspecified (6.2, 6.10) | Not assessed / Not assessed | The secondary path is not needed for the MVP, and the socket-pair primary has no path to attack | **Open** |
 | R23 | The shim's glibc floor (2.34 headless, 2.43 windowed) is higher than PHP's (2.17), so the shim sets the distributable floor | Not assessed / Not assessed | D21: build the shim against an old glibc. Not yet run on any other distro | **Open** (D21 decided; the shim build recipe is not verified yet) |
+| R24 | PHP-DI's circular-dependency guard is per container, not per Fiber, so a service whose construction suspends makes a second Fiber fail with a misleading "Circular dependency" error (4.9) | Not assessed / Not assessed | Rule: construct services without suspending, and initialise asynchronously after the container is built. A characterisation test in `ContainerFactoryTest` fails if PHP-DI changes. Revisit D24 if the rule is too limiting | **Verified** (7.1.1), rule adopted |
+| R25 | A manifest that repeats a JSON key silently keeps the last value (`json_decode` behaviour) (9.2) | Not assessed / Not assessed | Documented in 9.2. Detecting it needs a custom JSON parser, which is not planned | **Open**, accepted for now |
 
 ---
 
