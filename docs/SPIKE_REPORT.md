@@ -111,7 +111,7 @@ A second harness bug: closing a stream while Revolt still watched it crashed `st
 | Pointer moves seen | 69 |
 | No `click` or `key` events | nobody clicked inside the window or typed (clicks on the title bar are handled by winit's decorations, not delivered as clicks) |
 
-**Not shown by this run:** how the title bar and dialog look, whether the dialog appeared over the window, and whether the window stayed responsive while the dialog was open (not measured). The dialog's file path is a plain host path, which suggests an unsandboxed app.
+**Your impression (2026-11-06):** you like how the window looks: rounded corners and shadows. **Not shown by this run:** how the dialog looks, whether the dialog appeared over the window, and whether the window stayed responsive while the dialog was open (not measured). The dialog's file path is a plain host path, which suggests an unsandboxed app.
 
 ### P0.5 glibc PHP with FFI (R3)
 

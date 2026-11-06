@@ -15,7 +15,12 @@
     "ext-json": "*",
     "ext-pcntl": "*",
     "ext-posix": "*",
-    "ext-sockets": "*"
+    "ext-sockets": "*",
+    "monolog/monolog": "^3.12",
+    "php-di/php-di": "^7.1",
+    "psr/clock": "^1.0",
+    "psr/container": "^2.0",
+    "psr/log": "^3.0"
   },
   "autoload": {
     "psr-4": {

@@ -75,7 +75,7 @@ Phases 2 and 3 are independent of each other after Phase 1 (no GUI needed for IP
 **Hard gate:** R1 and R3 must pass before Phase 3 and Phase 6 respectively. R1 has passed. R3 has passed with the R23 condition, which P3.1, P6.1, P6.7 and P6.8 must close. R2 is decided (option (a)), so P3.12a to P3.12c proceed on that basis.
 
 ### Open design gaps *(added after the Phase 0 audit)*
-These are gaps in the design, found by the Phase 0 audit. They are **Open**. This plan does not choose a solution for any of them, except where a row is marked **Proposed** (D21 for R23, which needs your approval). For R14 to R21 the named step's acceptance must include a written contract in `FRAMEWORK.md` (and a decision-log row) plus a test of it, and that step is not done until it is. R22 has no building step yet (P8.4 reviews it). R23 is closed by the P6.1 to P6.8 recipe and tests, not by a contract. All are rows in `FRAMEWORK.md` section 16.
+These are gaps in the design, found by the Phase 0 audit. They are **Open**. This plan does not choose a solution for any of them, except D21 for R23, which you approved on 2026-11-06 (its build recipe is still to be chosen and verified). For R14 to R21 the named step's acceptance must include a written contract in `FRAMEWORK.md` (and a decision-log row) plus a test of it, and that step is not done until it is. R22 has no building step yet (P8.4 reviews it). R23 is closed by the P6.1 to P6.8 recipe and tests, not by a contract. All are rows in `FRAMEWORK.md` section 16.
 
 | ID | Gap | Why it matters | Step whose acceptance must resolve it |
 |---|---|---|---|
@@ -88,7 +88,7 @@ These are gaps in the design, found by the Phase 0 audit. They are **Open**. Thi
 | R20 | The master cannot be recycled, yet it holds the most long-lived state (all view code). | A slow leak in the master has no remedy except closing the app. | P2.13 (baseline measurement and budget). P4.8 (UI-event soak). |
 | R21 | Hot reload covers worker code only, while most edits land in master code. | The reload promise does not hold for the common case. How a reload restart is counted by the supervisor is also open. | P5.6. |
 | R22 | `SO_PEERCRED` is not exposed by PHP's sockets extension here, so the secondary path-socket authentication is unspecified. | The secondary IPC path cannot be built as the framework doc describes it. | No step builds the secondary path in this plan. It must be resolved before one is added, and P8.4 reviews it. |
-| R23 | The shim's glibc floor (2.34 headless, 2.43 windowed) is higher than PHP's (2.17). The shim was built only on Fedora 44. | The distributable floor is set by how the shim is built. Loading the shim on the build host proves nothing about older distributions. | P3.1 (record), P6.1 (recipe), P6.7 (old-glibc test), P6.8 (declared minimum). D21 (build against an old glibc) is **Proposed** and needs your approval. |
+| R23 | The shim's glibc floor (2.34 headless, 2.43 windowed) is higher than PHP's (2.17). The shim was built only on Fedora 44. | The distributable floor is set by how the shim is built. Loading the shim on the build host proves nothing about older distributions. | P3.1 (record), P6.1 (recipe), P6.7 (old-glibc test), P6.8 (declared minimum). D21 (build against an old glibc) is **Decided** (approved 2026-11-06); the recipe is chosen and verified in P3.1 and P6.1. |
 
 ---
 
@@ -98,7 +98,7 @@ These are gaps in the design, found by the Phase 0 audit. They are **Open**. Thi
 |---|---|---|
 | P0.4 | Nothing now. `sudo dnf install gtk4-devel` is needed only if the GTK4 fallback (b) is ever pursued. Option (a) was chosen. | Not installed on this machine |
 | P0.5 | Done. Permission was given. `spc doctor --no-interaction` attempts `sudo` installs on its own, so ask before re-running it. | Rule 6 |
-| Checkpoint 0 | Approval of D21 (build the shim against an old glibc, **Proposed**) | Decides how P3.1 and P6.1 build the shim |
+| Checkpoint 0 | *Answered:* D21 (build the shim against an old glibc) was approved on 2026-11-06 | Decides how P3.1 and P6.1 build the shim |
 | P1.1 | *Answered 2026-11-06:* PHP floor, container, formatter, copyright holder (D23 to D26). Still open: the Composer vendor name, which stays a placeholder (`raphp/raphp`; the name was a code name when this was decided, D22, and the rename is D28), and the exact tool versions (fixed in P1.3) | Binding for the whole project |
 | P6.1 | Permission before the first `spc` run. It downloads sources and installs Zig 0.17.1 and `pkg-config` into its own work directory. `spc doctor --no-interaction` may attempt `sudo` installs on its own. The P0.5 build took well over 30 minutes of compute. | Rule 6 |
 | P6.7 | Permission before pulling container images (`podman`, including an old-glibc image) | A download of unknown size, so working-agreement rule 6 applies |
@@ -166,7 +166,7 @@ Depends on P0.5.
 
 ### P0.8 Phase 0 report. Size S
 - **Do:** write `docs/SPIKE_REPORT.md`, update `FRAMEWORK.md` (tags, decision log D18 to D21, risk register R14 to R23), and list any design changes. Confirm that this plan's acceptance criteria still match the framework doc after those updates, including the R15 owner (P3.3 defines the command/event ordering contract, P4.2, P4.3 and P4.6 test against it) and the P3.11b / P3.12 restructure.
-- **Checkpoint 0:** you review the report. We decide go/no-go for Phase 1 and for each gated risk. D21 (**Proposed**) needs your approval here.
+- **Checkpoint 0:** you review the report. We decide go/no-go for Phase 1 and for each gated risk. D21 was approved on 2026-11-06.
 
 ---
 
@@ -332,7 +332,7 @@ A doc section listing blocking PHP functions and their Raphp replacements.
 
 ### P3.1 Shim workspace and ABI. Size M
 - `shim/` Cargo workspace, `cbindgen` configuration, committed header, `raphp_abi_version`, `raphp_last_error`, `catch_unwind` wrapper for every `extern "C"` function.
-- A `make` target that reports the highest `GLIBC_x.y` the built shim requires (`objdump -T`), and records it. *(added after the Phase 0 audit, R23)* Building the shim against an old glibc is D21 (**Proposed**, needs your approval). Until it is approved the report is informational, and the P0.5 figures (2.34 headless, 2.43 windowed) stand.
+- A `make` target that reports the highest `GLIBC_x.y` the built shim requires (`objdump -T`), and records it. *(added after the Phase 0 audit, R23)* Building the shim against an old glibc is D21 (**Decided**, approved 2026-11-06). The report records the figure for each build, and the P0.5 figures (2.34 headless, 2.43 windowed) are the baseline for a build on the host glibc.
 **Done when:** `make header` produces no diff; a Rust test proves a panic inside a command becomes an error and leaves the shim usable or cleanly poisoned; the shim's glibc requirement is printed by the `make` target.
 **Open gap to close here: R14.** A panic or exit on the shim's own UI thread is not covered by the rule above. This step's acceptance must include a written contract for what happens in that case, and a test. The place of the shim's exit in the master's shutdown order is checked again at P4.5. *(added after the Phase 0 audit)*
 
@@ -360,7 +360,7 @@ A doc section listing blocking PHP functions and their Raphp replacements.
 ### P3.6 Window backend. Size L
 - winit window per P0.1: create, title, size, close, focus, scale factor, resize events; Wayland and X11.
 **Done when:** a manual checklist passes on your session, and screenshots plus event traces are attached. *(added after the Phase 0 audit:)*
-- On GNOME/Wayland the winit client-side title bar allows move, resize, maximize and close, and a screenshot records its look. If it is unacceptable, that is recorded as a decision for you (the P0.4 check of its look and behavior is still open).
+- On GNOME/Wayland the winit client-side title bar allows move, resize, maximize and close, and a screenshot records its look. You already accepted its look from the chrome experiment (rounded corners, shadows); the screenshot is still recorded as evidence.
 - Redraw pacing (F8), with static content and no animation or caret blink: an idle window (no commands, no input) draws zero frames over 5 seconds after its initial frame, read from the P3.3 redraw counter, and its CPU use is recorded as a measured figure, not a threshold. Separately, minimize or hide the window and record whether the counter advances, per compositor as observed. This is a recorded result, not a pass or fail condition, because occlusion reporting is compositor-dependent and unverified. The idle-window zero-frames check above is the hard criterion.
 - The P3.5 worker-spawn test (R17) is repeated with the real window open.
 
@@ -491,7 +491,7 @@ Interface now, full implementation after Phase 6 produces the builds.
 
 ### P6.1 Reproducible PHP build recipe. Size M
 `build/php/` scripts, extension list, glibc target. Pin the `spc` version. Measured in P0.5: `spc doctor` installs Zig 0.17.1 and `pkg-config` into its own work directory, and `spc doctor --no-interaction` may attempt `sudo` installs on its own, so ask before the first run (rule 6). A full build takes well over 30 minutes of compute (libffi 7.3 min, openssl 9.8 min, 616 objects at about 34 per minute). The PHP configure time is unknown. The recipe documents how a rebuild reuses the cache. *(added after the Phase 0 audit)*
-Also define how the shim `.so` is built for the same glibc floor as PHP (R23, D21). Candidates are a Zig-based linker such as `cargo-zigbuild` with a `.2.17` target, or a build container with an old glibc. This is a recipe to choose and verify here. No spike has checked it, and D21 needs your approval. *(added after the Phase 0 audit)*
+Also define how the shim `.so` is built for the same glibc floor as PHP (R23, D21). Candidates are a Zig-based linker such as `cargo-zigbuild` with a `.2.17` target, or a build container with an old glibc. This is a recipe to choose and verify here. No spike has checked it, and D21 is approved (2026-11-06) but the recipe is not verified. *(added after the Phase 0 audit)*
 **Done when:** the recipe builds `php`, `micro.sfx` and the shim, and `objdump -T` on each shows the highest `GLIBC_x.y` it requires.
 
 ### P6.2 Phar packer. Size M

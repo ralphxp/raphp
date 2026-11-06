@@ -446,7 +446,7 @@ Findings on GNOME 50.5 Wayland **[Verified, P0.4; Decided: option (a), GNOME fir
 
 Not a P0.4 finding **[Unverified]**: Wayland does not let apps position their own windows. This is a general protocol fact that was not tested here.
 
-The GTK4 window path (b) is not pursued. **[Decided]** **[Verified, chrome experiment]** A real portal file dialog requested from PHP through the shim (`rfd` 0.17.2, helper thread, not attached to the window) returned the chosen path to PHP as an event, and the title bar's close button produced `close_requested` in PHP. **[Unverified]** The tray, how the winit title bar and the dialog look, whether the dialog attaches to the window, window responsiveness while the dialog is open, and IME were not exercised. Those checks are deferred to plan steps P3.12a to P3.12c (tray, dialog parenting; clipboard is built in P3.11b) and P3.11a (IME).
+The GTK4 window path (b) is not pursued. **[Decided]** **[Verified, chrome experiment]** A real portal file dialog requested from PHP through the shim (`rfd` 0.17.2, helper thread, not attached to the window) returned the chosen path to PHP as an event, and the title bar's close button produced `close_requested` in PHP. **[Decided]** You accepted the look of the winit client-side window (title bar, rounded corners, shadows) after seeing it in the chrome experiment. **[Unverified]** The tray, how the dialog looks, whether the dialog attaches to the window, window responsiveness while the dialog is open, and IME were not exercised. Those checks are deferred to plan steps P3.12a to P3.12c (tray, dialog parenting; clipboard is built in P3.11b) and P3.11a (IME).
 
 ### 7.8 Headless backend for tests **[Decided, O4]**
 The shim exposes a `headless` backend with no window system dependency. It runs layout and the command/event machinery without drawing to a screen, so CI can test the whole PHP-to-shim path on machines with no display.
@@ -454,7 +454,7 @@ The shim exposes a `headless` backend with no window system dependency. It runs 
 ### 7.9 Build and distribution
 One Rust `cdylib` per architecture, linked against glibc. The version is pinned in the project lock file. `rlm` fetches prebuilt binaries and verifies checksums. Building from source requires a Rust toolchain.
 
-**glibc floor.** The shim's highest required `GLIBC_` symbol version was 2.34 (headless) and 2.43 (windowed), measured with `objdump -T` on this machine (host glibc 2.43). PHP and the app need only 2.17. So the distributable floor is set by how the shim is built, not by PHP. **[Verified, F14]** Not yet run on any other distro. Building the shim against an old glibc (for example `cargo-zigbuild` with a `.2.17` target, or an old-distro container) would avoid raising the floor (D21, R23). **[Proposed, needs user approval]**
+**glibc floor.** The shim's highest required `GLIBC_` symbol version was 2.34 (headless) and 2.43 (windowed), measured with `objdump -T` on this machine (host glibc 2.43). PHP and the app need only 2.17. So the distributable floor is set by how the shim is built, not by PHP. **[Verified, F14]** Not yet run on any other distro. Building the shim against an old glibc (for example `cargo-zigbuild` with a `.2.17` target, or an old-distro container) would avoid raising the floor (D21, R23). **[Decided, D21, approved by you on 2026-11-06]** The mechanism (`cargo-zigbuild` or a container) is chosen and verified in P3.1 and P6.1.
 
 ---
 
@@ -665,7 +665,7 @@ Single file (shim embedded) or a bundle directory (binary plus `lib/`). The size
 | D18 | Workers are spawned with raw `proc_open` and an array command, never `amphp/process` | Source-checked (F18) | Source read in `amphp/process`, no code run. The array command is used in spikes P0.2, P0.3 and P0.6 (5.1) |
 | D19 | Self re-exec uses `readlink('/proc/self/exe')`; `PHP_BINARY` is empty in micro | Verified | P0.6 (10.2) |
 | D20 | Use the instance form `$ffi->new()`; `ffi.enable=preload` already permits FFI in CLI and micro | Verified | F11, F12 (10.2) |
-| D21 | Build the Rust shim against an old glibc (for example `cargo-zigbuild` with a `.2.17` target, or an old-distro container) so the shim does not raise the distributable floor | Proposed, needs user approval | F14, R23 (7.9) |
+| D21 | Build the Rust shim against an old glibc (for example `cargo-zigbuild` with a `.2.17` target, or an old-distro container) so the shim does not raise the distributable floor | Decided (approved by you on 2026-11-06) | F14, R23 (7.9). The mechanism is chosen and verified in P3.1 and P6.1 |
 | D22 | `niphy` **was** the code name, until the rename on 2026-11-06 (D28). The public name is **Raphp** (D27). Nothing was ever published under the code name. | Decided | History: the code name appeared in the `Niphy\` namespace, `libniphy`, `niphy.json`, `NIPHY_*` variables, the C symbol prefix, and the acronym `nlm` (niphy libs manager) |
 | D23 | **PHP floor: 8.5 or newer** (`php >= 8.5`). CI runs on PHP 8.5 for now, and newer versions are added as they ship. PHPUnit 13 (needs PHP 8.5.12 or newer) is therefore usable, and the floor equals the managed PHP build. | Decided (P1.1) | You confirmed "8.5+". PHP 8.3 active support ended 31 Dec 2025, 8.4 ends 31 Dec 2026, 8.5 ends 31 Dec 2027 (php.net, 2026-11-06) |
 | D24 | **Container: PHP-DI 7.** The core depends only on `psr/container`. | Decided (P1.1) | PHP-DI 7.1.1 requires PHP 8.0 or newer. Autowiring fits constructor injection (O9) |
@@ -704,15 +704,15 @@ The questions table in section 17 is the record for O2, O3, O4, O5 and O7; they 
 | R20 | The master cannot be recycled yet holds the most long-lived state (all view code, 8.4); R9's mitigation does not cover it | Not assessed / Not assessed | None yet. Needs a master memory budget and monitoring plan (Phases 2 and 4) | **Open** |
 | R21 | Hot reload (5.7) covers worker code only, while most edits land in master code; reload versus crash accounting is undefined | Not assessed / Not assessed | None yet. Phase 5 (`rlm dev`) must define it | **Open** |
 | R22 | `SO_PEERCRED` is not exposed by PHP's sockets extension here, so the secondary path-socket authentication is unspecified (6.2, 6.10) | Not assessed / Not assessed | The secondary path is not needed for the MVP, and the socket-pair primary has no path to attack | **Open** |
-| R23 | The shim's glibc floor (2.34 headless, 2.43 windowed) is higher than PHP's (2.17), so the shim sets the distributable floor | Not assessed / Not assessed | D21: build the shim against an old glibc. Not yet run on any other distro | **Open** (D21 Proposed) |
+| R23 | The shim's glibc floor (2.34 headless, 2.43 windowed) is higher than PHP's (2.17), so the shim sets the distributable floor | Not assessed / Not assessed | D21: build the shim against an old glibc. Not yet run on any other distro | **Open** (D21 decided; the shim build recipe is not verified yet) |
 
 ---
 
 ## 17. Open questions and accepted recommendations
 
-All numbered questions are resolved or deferred (O5 to Phase 6, the exact O11 tool versions to P1.3). The one item that still needs your approval is D21 (building the shim against an old glibc). Accepted recommendations are recorded as decisions in the sections they affect. O8 is MIT with semantic versioning. O5 is deferred to Phase 6 by design. The Phase 0 spikes confirmed O1 (socket pair, with the `SOCK_CLOEXEC` condition) and O3 (a managed static PHP build is feasible), and settled the native-chrome question as option (a), GNOME first.
+All numbered questions are resolved or deferred (O5 to Phase 6, the exact O11 tool versions to P1.3). No item is waiting on your approval: D21 (building the shim against an old glibc) was approved on 2026-11-06. Accepted recommendations are recorded as decisions in the sections they affect. O8 is MIT with semantic versioning. O5 is deferred to Phase 6 by design. The Phase 0 spikes confirmed O1 (socket pair, with the `SOCK_CLOEXEC` condition) and O3 (a managed static PHP build is feasible), and settled the native-chrome question as option (a), GNOME first.
 
-The design gaps found in the audit are not numbered questions. They are recorded as Open risks R14 to R22 in section 16, each with the phase that must resolve it. One proposed decision needs your approval: D21 (build the shim against an old glibc, see R23).
+The design gaps found in the audit are not numbered questions. They are recorded as Open risks R14 to R22 in section 16, each with the phase that must resolve it. The one proposed decision, D21 (build the shim against an old glibc, see R23), was approved on 2026-11-06.
 
 | ID | Question | Resolution | Status |
 |---|---|---|---|

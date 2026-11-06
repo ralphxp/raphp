@@ -13,7 +13,7 @@ Legend: ✅ done and verified · 🔄 in progress · ⏳ not started · ⛔ bloc
 | Phase | Name | Status | Steps done |
 |---|---|---|---|
 | 0 | Spikes and verification | ✅ finished (accepted when you started Phase 1) | 9 of 9 (P0.0 to P0.8) |
-| 1 | Repository foundation | 🔄 in progress | 3 of 6 (P1.1 to P1.3); P1.4 written, unproven |
+| 1 | Repository foundation | 🔄 in progress | 4 of 6 (P1.1 to P1.4) |
 | 2 | Runtime core and IPC | ⏳ not started | 0 |
 | 2B | Tier 1 standard library | ⏳ not started | 0 |
 | 3 | `libraphp` shim MVP | ⏳ not started | 0 |
@@ -59,7 +59,7 @@ Legend: ✅ done and verified · 🔄 in progress · ⏳ not started · ⛔ bloc
 | **P0.8** | Report and doc updates | ✅ | `SPIKE_REPORT.md` written; FRAMEWORK v0.3 and the plan updated (section 2) |
 
 ### What was *not* tested
-Clicks and key presses; a tray icon or menu; how the title bar and dialog look; attaching the dialog to the window; responsiveness while the dialog is open; IME; any other distro, glibc or architecture; more than one worker at a time; `proc_open` while the multi-threaded shim is alive; the windowed shim through `memfd` inside micro; the real duration of PHP's `configure`.
+Clicks and key presses; a tray icon or menu; how the dialog looks; attaching the dialog to the window; responsiveness while the dialog is open; IME; any other distro, glibc or architecture; more than one worker at a time; `proc_open` while the multi-threaded shim is alive; the windowed shim through `memfd` inside micro; the real duration of PHP's `configure`.
 
 ---
 
@@ -71,7 +71,7 @@ Clicks and key presses; a tray icon or menu; how the title bar and dialog look; 
 | **P1.2** | Repository scaffold | ✅ | `LICENSE` (MIT), `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `.editorconfig`, `composer.json`, `.gitignore` (your `/spikes` line kept), and the layout (`php/src`, `php/tests`, `shim`, `rlm`, `examples`). `composer validate --strict` valid; PHP 8.5.12 and all five extensions pass the platform check; a clean install works; an executable (`phpstan`) installs on the mount and runs. Nothing is committed |
 | **P1.3** | Tooling and `make check` | ✅ | `make check` exits 0: formatter clean, PHPStan (`level: max`) clean, 7 PHPUnit tests pass. **Versions:** PHPUnit 13.4.6, PHPStan 2.3.5 (+ strict-rules, deprecation-rules, disallowed-calls 4.15.0), PHP-CS-Fixer 3.95.28 (`@PER-CS3.0`). **Failures shown on purpose:** bad formatting is caught with a diff; `proc_open()` in `php/src` is rejected; `stream_socket_pair()` is rejected in `php/src` and allowed in `php/tests`; a real PHP 8.5 deprecation fails PHPUnit. **Caveat:** the Rust step is *skipped* (no `shim/Cargo.toml` until P3.1), so `cargo fmt`, `clippy` and `cargo test` have not actually run. Only their presence is confirmed |
 | — | **Rename to Raphp** (D28) | ✅ | Code and config by me (`raphp/raphp`, `Raphp\` namespace, `rlm/`); docs by three editors and two reviewers. Both reviewers passed and I fixed their two low notes. `make check` still exits 0. The old name remains only in the history rows D22, D27 and D28, in the spike code and its measurement rows, and in the former-name notes in README, CONTRIBUTING and CHANGELOG |
-| **P1.4** | Continuous integration | ⚠️ | `.github/workflows/ci.yml` written: `make check` on PHP 8.5 (`ffi`, `pcntl`, `posix`, `sockets`) plus stable Rust with rustfmt and clippy, on pushes to `master` and pull requests. Actions `checkout@v7`, `setup-php@v2`, `rust-toolchain@stable`, pinned by tag, not commit. YAML parses. **Not yet run:** it needs your push, then I read the result with `gh`. Rust steps are skipped by `make check` until P3.1 |
+| **P1.4** | Continuous integration | ✅ | **Proven.** Your push (`f221905`) triggered the first run: it succeeded in 18 s on a GitHub runner with PHP 8.5.12 and `ffi` enabled. The "Run every check" step showed the formatter clean, PHPStan `[OK]`, PHPUnit `OK (7 tests, 8 assertions)`, and the Rust step skipped as designed. `.github/workflows/ci.yml`; actions `checkout@v7`, `setup-php@v2`, `rust-toolchain@stable`, pinned by tag, not commit. **Watch:** CI's stable Rust is newer than yours (rustfmt 1.10.0 and clippy 0.1.99 against 1.9.0 and 0.1.95), so a lint could pass locally and fail in CI later. P3.1 should pin the toolchain |
 | **P1.5** | Composition root skeleton | ⏳ | |
 | **P1.6** | Error model | ⏳ | |
 
@@ -128,7 +128,7 @@ None has a solution yet. Each names the plan step whose acceptance must resolve 
 | R20 | The master cannot be recycled yet holds the most long-lived state |
 | R21 | Hot reload covers worker code only, but most edits land in master code |
 | R22 | `SO_PEERCRED` is not exposed by PHP's sockets extension, so the secondary path-socket auth is unspecified |
-| R23 | The shim's glibc floor is higher than PHP's (proposed fix D21 needs your approval) |
+| R23 | The shim's glibc floor is higher than PHP's (fix D21 approved on 2026-11-06; the build recipe is not verified yet) |
 
 ---
 
