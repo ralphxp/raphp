@@ -123,6 +123,29 @@ final class WaitListTest extends AsyncTestCase
         self::assertSame(['woken'], $outcome->entries());
     }
 
+    public function testAWaiterThatIsCancelledAndWokenInTheSameMomentIsStillWoken(): void
+    {
+        $list = new WaitList();
+        $cancel = new DeferredCancellation();
+        $outcome = new Recorder();
+        $waiter = async(static function () use ($list, $cancel, $outcome): void {
+            try {
+                $list->wait($cancel->getCancellation());
+                $outcome->add('woken');
+            } catch (CancelledException) {
+                $outcome->add('cancelled');
+            }
+        });
+        delay(0.01);
+
+        $cancel->cancel();
+        $list->wakeOne();
+        $waiter->await();
+
+        self::assertSame(['woken'], $outcome->entries(), 'a wake-up that was handed over must not be lost');
+        self::assertSame(0, $list->count());
+    }
+
     public function testACancellationThatIsAlreadyRequestedStillLeavesTheListEmpty(): void
     {
         $list = new WaitList();

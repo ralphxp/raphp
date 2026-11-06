@@ -75,6 +75,22 @@ final class SlotsTest extends AsyncTestCase
         self::assertSame(['a', 'b', 'c'], $got->entries());
     }
 
+    public function testASlotHandedToAWaiterIsNotAlsoLeftFree(): void
+    {
+        $slots = new Slots(1, 10);
+        $slots->acquire();
+        $got = new Recorder();
+        $this->taker($slots, $got, 'waiter');
+        delay(0.01);
+
+        $slots->release();
+        delay(0.01);
+        $this->taker($slots, $got, 'third');
+        delay(0.02);
+
+        self::assertSame(['waiter'], $got->entries(), 'only one slot exists: the third taker must wait');
+    }
+
     public function testAReleasedSlotIsKeptWhenNobodyIsWaiting(): void
     {
         $slots = new Slots(1, 10);

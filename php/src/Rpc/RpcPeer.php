@@ -60,7 +60,8 @@ use Throwable;
  * `E_INTERNAL` with a message that tells nothing (the exception is logged here instead).
  *
  * **Closing.** When the connection ends, every call still waiting fails: with `E_WORKER_CRASHED`
- * when the other side vanished without saying `bye`, with `E_WORKER_UNAVAILABLE` after a local
+ * when the other side vanished without saying `bye` (a `bye` closes the connection at once, so
+ * what follows it is never read), with `E_WORKER_UNAVAILABLE` after a local
  * {@see self::close()} or a `bye`. A protocol violation by the other side closes the connection
  * and fails the calls with that error. Nothing is written back first (P2.7 adds `bye`).
  *
@@ -99,8 +100,6 @@ final class RpcPeer
     private bool $started = false;
 
     private bool $closed = false;
-
-    private bool $peerSaidBye = false;
 
     private ?RpcException $closedBecause = null;
 
@@ -342,9 +341,7 @@ final class RpcPeer
                 $this->logger->warning('the peer closed the connection in the middle of a message');
             }
 
-            $this->closeBecause($this->peerSaidBye
-                ? new WorkerUnavailableException('the peer closed the connection after saying bye')
-                : new WorkerCrashedException('the peer closed the connection'));
+            $this->closeBecause(new WorkerCrashedException('the peer closed the connection'));
         } catch (StreamException $exception) {
             $this->closeBecause(new WorkerCrashedException('reading from the peer failed', null, $exception));
         } catch (Throwable $exception) {
@@ -403,7 +400,6 @@ final class RpcPeer
         } elseif ($envelope instanceof Ping) {
             $this->queueNow(new Pong());
         } elseif ($envelope instanceof Bye) {
-            $this->peerSaidBye = true;
             $this->closeBecause(new WorkerUnavailableException('the peer said bye' . ($envelope->reason === '' ? '' : ": {$envelope->reason}")));
         } elseif ($this->onControl !== null) {
             $this->callBack(fn() => ($this->onControl)($envelope), 'control message');

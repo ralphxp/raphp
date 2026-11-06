@@ -9,6 +9,7 @@ use function Amp\async;
 use Amp\Cancellation;
 use Amp\CancelledException;
 use Amp\DeferredCancellation;
+use Amp\DeferredFuture;
 
 use function Amp\delay;
 use function Amp\Future\await;
@@ -27,8 +28,12 @@ use Raphp\Error\RpcException;
 use Raphp\Error\WorkerCrashedException;
 use Raphp\Error\WorkerUnavailableException;
 use Raphp\Ipc\Codec\JsonLineCodec;
+use Raphp\Rpc\MiddlewareStack;
+use Raphp\Rpc\RpcHandler;
+use Raphp\Rpc\RpcMiddleware;
 use Raphp\Rpc\RpcPeerOptions;
 use Raphp\Rpc\RpcRequest;
+use Raphp\Rpc\RpcResponse;
 use Raphp\Tests\Support\AsyncTestCase;
 use Raphp\Tests\Support\PeerPair;
 use Raphp\Tests\Support\Recorder;
@@ -414,7 +419,7 @@ final class RpcPeerTest extends AsyncTestCase
 
     public function testRequestParamsTooLargeToSendFailLocallyAndTheNextCallStillWorks(): void
     {
-        $pair = $this->open();
+        $pair = $this->open(new RpcPeerOptions(maxInFlight: 1));
         $pair->serverHandlers->register('echo', self::echoParams(...));
         $clientCodecLimit = JsonLineCodec::DEFAULT_MAX_LINE_BYTES;
 
@@ -526,6 +531,90 @@ final class RpcPeerTest extends AsyncTestCase
 
         self::assertTrue($pair->client->isClosed());
         self::assertTrue($pair->server->isClosed());
+    }
+
+    public function testAwaitClosedWaitsForARequestThatIgnoresCancellation(): void
+    {
+        $pair = $this->open();
+        $finished = new Recorder();
+        $pair->serverHandlers->register('stubborn', static function () use ($finished): string {
+            delay(0.15);
+            $finished->add();
+
+            return 'x';
+        });
+        $call = async(fn(): mixed => $pair->client->call('stubborn', timeout: 5.0));
+        delay(0.05);
+
+        $pair->server->close();
+        $pair->server->awaitClosed();
+
+        self::assertSame(1, $finished->count(), 'awaitClosed must not return while a handler is still running');
+        $this->thrownBy(fn(): mixed => $call->await());
+    }
+
+    public function testACallThatFailsBecauseTheConnectionClosedKeepsTheReasonAsItsCause(): void
+    {
+        $pair = $this->open();
+        $pair->client->close();
+
+        $error = $this->thrownBy(fn(): mixed => $pair->client->call('x'));
+
+        self::assertInstanceOf(WorkerUnavailableException::class, $error);
+        self::assertInstanceOf(WorkerUnavailableException::class, $error->getPrevious());
+        self::assertSame('the connection was closed here', $error->getPrevious()->getMessage());
+    }
+
+    public function testALocalFailureReachesTheOutboundMiddlewareAsAFailureResponseNotAnException(): void
+    {
+        $seen = new Recorder();
+        $observer = new class ($seen) implements RpcMiddleware {
+            public function __construct(private readonly Recorder $seen) {}
+
+            public function process(RpcRequest $request, RpcHandler $next, ?Cancellation $cancellation = null): RpcResponse
+            {
+                $response = $next->handle($request, $cancellation);
+                $this->seen->add($response->error === null ? 'success' : $response->error->wireCode());
+
+                return $response;
+            }
+        };
+        $pair = PeerPair::open(clientOptions: new RpcPeerOptions(maxInFlight: 1, maxQueuedCalls: 1), clientOutbound: new MiddlewareStack([$observer]));
+        $this->pair = $pair;
+        $release = new DeferredFuture();
+        $pair->serverHandlers->register('hold', static function () use ($release): string {
+            $release->getFuture()->await();
+
+            return 'x';
+        });
+        $running = async(fn(): mixed => $pair->client->call('hold', timeout: 10.0));
+        $waiting = async(fn(): mixed => $pair->client->call('hold', timeout: 10.0));
+        delay(0.03);
+
+        $this->thrownBy(fn(): mixed => $pair->client->call('hold', timeout: 10.0));
+        $release->complete();
+        $running->await();
+        $waiting->await();
+
+        self::assertContains('E_WORKER_UNAVAILABLE', $seen->entries(), 'the refused call must pass through the middleware as a failure response');
+    }
+
+    public function testCallsWaitingForASlotFailWhenTheConnectionClosesInsteadOfHanging(): void
+    {
+        $pair = $this->open(new RpcPeerOptions(maxInFlight: 1));
+        $pair->serverHandlers->register('hold', static function (RpcRequest $request, ?Cancellation $cancellation): string {
+            delay(10, true, $cancellation);
+
+            return 'x';
+        });
+        $running = async(fn(): mixed => $pair->client->call('hold', timeout: 20.0));
+        $waiting = async(fn(): mixed => $pair->client->call('hold', timeout: 20.0));
+        delay(0.05);
+
+        $pair->client->close();
+
+        self::assertInstanceOf(WorkerUnavailableException::class, $this->thrownBy(fn(): mixed => $waiting->await()));
+        self::assertInstanceOf(WorkerUnavailableException::class, $this->thrownBy(fn(): mixed => $running->await()));
     }
 
     public function testClosingTwiceIsHarmless(): void

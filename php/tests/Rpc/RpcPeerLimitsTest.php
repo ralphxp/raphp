@@ -7,6 +7,7 @@ namespace Raphp\Tests\Rpc;
 use function Amp\async;
 
 use Amp\Cancellation;
+use Amp\CancelledException;
 use Amp\DeferredCancellation;
 use Amp\DeferredFuture;
 
@@ -241,5 +242,126 @@ final class RpcPeerLimitsTest extends AsyncTestCase
 
         $notifier->await();
         self::assertSame(3000, $sent->count());
+    }
+
+    // ------------------------------------------------------------ a far end that stops reading
+
+    /**
+     * A peer whose writer is stuck (the far end does not read) and whose outbound queue holds one
+     * message, which is all it has room for.
+     */
+    private function stalled(): RawConnection
+    {
+        $connection = RawConnection::open(new RpcPeerOptions(maxInFlight: 1, outboundBuffer: 1));
+        $this->connection = $connection;
+        $connection->peer->notify('fill', ['padding' => str_repeat('x', 2_000_000)]);
+        delay(0.05);
+        $connection->peer->notify('fill2');
+
+        return $connection;
+    }
+
+    /**
+     * Reads everything the stalled peer has sent so far and returns the methods seen.
+     *
+     * @return list<string>
+     */
+    private function drainMethods(RawConnection $connection): array
+    {
+        $methods = [];
+        while (true) {
+            try {
+                $message = $connection->raw->receive(0.15);
+            } catch (CancelledException) {
+                return $methods;
+            }
+
+            self::assertIsArray($message);
+            $method = $message['method'] ?? $message['kind'] ?? '';
+            $methods[] = is_string($method) ? $method : '';
+        }
+    }
+
+    public function testACallThatTimesOutWhileWaitingForRoomToSendSendsNothingAndFreesItsSlot(): void
+    {
+        $connection = $this->stalled();
+
+        $error = $this->thrownBy(fn(): mixed => $connection->peer->call('never.sent', timeout: 0.1));
+
+        self::assertInstanceOf(RequestTimeoutException::class, $error);
+        self::assertSame(['fill', 'fill2'], $this->drainMethods($connection), 'the call that gave up must not have been sent');
+
+        $next = async(fn(): mixed => $connection->peer->call('sent.later', timeout: 5.0));
+        $request = $connection->raw->receive();
+
+        self::assertIsArray($request);
+        self::assertSame('sent.later', $request['method'] ?? null);
+        $connection->raw->send(['id' => $request['id'] ?? 0, 'kind' => 'res', 'result' => 'ok']);
+        self::assertSame('ok', $next->await(), 'the slot of the call that gave up must have been freed');
+    }
+
+    public function testANotifyWaitingForRoomCanBeCancelledAndIsNeverSent(): void
+    {
+        $connection = $this->stalled();
+        $cancel = new DeferredCancellation();
+        $notify = async(fn() => $connection->peer->notify('cancelled', [], $cancel->getCancellation()));
+        delay(0.05);
+
+        $cancel->cancel();
+
+        self::assertInstanceOf(CancelledException::class, $this->thrownBy(fn() => $notify->await()));
+        self::assertSame(['fill', 'fill2'], $this->drainMethods($connection));
+    }
+
+    public function testSendersWaitingForRoomFailWhenTheConnectionClosesInsteadOfHanging(): void
+    {
+        $connection = $this->stalled();
+        $notify = async(fn() => $connection->peer->notify('waiting'));
+        $call = async(fn(): mixed => $connection->peer->call('waiting', timeout: 20.0));
+        delay(0.05);
+
+        $connection->peer->close();
+
+        self::assertInstanceOf(WorkerUnavailableException::class, $this->thrownBy(fn() => $notify->await()));
+        self::assertInstanceOf(WorkerUnavailableException::class, $this->thrownBy(fn(): mixed => $call->await()));
+    }
+
+    public function testTheReaderKeepsHandlingRequestsEvenWhenItsAnswersToPingsCannotBeWritten(): void
+    {
+        $connection = RawConnection::open(new RpcPeerOptions(outboundBuffer: 1));
+        $this->connection = $connection;
+        $handled = new Recorder();
+        $connection->handlers->register('mark', static function () use ($handled): string {
+            $handled->add();
+
+            return 'marked';
+        });
+
+        for ($ping = 0; $ping < 1500; $ping++) {
+            $connection->raw->send(['kind' => 'ping']);
+        }
+
+        $connection->raw->send(['id' => 1, 'kind' => 'req', 'method' => 'mark']);
+        delay(0.2);
+
+        self::assertSame(1, $handled->count(), 'the reader must never wait for a write to finish');
+    }
+
+    public function testNothingAfterAByeInTheSameChunkIsHandled(): void
+    {
+        $connection = RawConnection::open();
+        $this->connection = $connection;
+        $handled = new Recorder();
+        $connection->handlers->register('mark', static function () use ($handled): string {
+            $handled->add();
+
+            return 'marked';
+        });
+
+        $connection->raw->sendRaw("{\"kind\":\"bye\",\"reason\":\"done\"}\n{\"id\":1,\"kind\":\"req\",\"method\":\"mark\"}\n");
+        delay(0.1);
+
+        self::assertTrue($connection->peer->isClosed());
+        self::assertSame(0, $handled->count());
     }
 }
