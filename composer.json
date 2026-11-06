@@ -1,6 +1,6 @@
 {
-  "name": "niphy/niphy",
-  "description": "Raphp (code name niphy): an async PHP runtime with an optional native GUI. Placeholder package name until the rename.",
+  "name": "raphp/raphp",
+  "description": "Raphp: an async PHP runtime with an optional native GUI. Placeholder package name until publishing.",
   "type": "library",
   "license": "MIT",
   "authors": [
@@ -19,12 +19,12 @@
   },
   "autoload": {
     "psr-4": {
-      "Niphy\\": "php/src/"
+      "Raphp\\": "php/src/"
     }
   },
   "autoload-dev": {
     "psr-4": {
-      "Niphy\\Tests\\": "php/tests/"
+      "Raphp\\Tests\\": "php/tests/"
     }
   },
   "config": {

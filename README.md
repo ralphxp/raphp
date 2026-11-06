@@ -1,6 +1,6 @@
-# Raphp (code name: niphy)
+# Raphp
 
-> **Raphp** (Ralph PHP, pronounced "raf-pee") is the public name. **niphy** is the code name still used in the code and package names. Nothing is published yet.
+> **Raphp** (Ralph PHP, pronounced "raf-pee") is the name of the project, formerly code-named niphy. Nothing is published yet.
 
 An async PHP runtime with an optional native GUI.
 

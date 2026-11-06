@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace Niphy\Tests;
+namespace Raphp\Tests;
 
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\Attributes\IgnoreDeprecations;
@@ -26,7 +26,7 @@ final class EnvironmentTest extends TestCase
 
     public function testPhpVersionMeetsTheFloor(): void
     {
-        self::assertGreaterThanOrEqual(80500, PHP_VERSION_ID, 'niphy needs PHP 8.5 or newer (D23)');
+        self::assertGreaterThanOrEqual(80500, PHP_VERSION_ID, 'Raphp needs PHP 8.5 or newer (D23)');
     }
 
     #[DataProvider('requiredExtensions')]

@@ -8,7 +8,7 @@ use PhpCsFixer\Finder;
 $finder = (new Finder())
     ->in([
         __DIR__ . '/php',
-        __DIR__ . '/nlm',
+        __DIR__ . '/rlm',
         __DIR__ . '/examples',
     ])
     ->name('*.php');

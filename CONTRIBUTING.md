@@ -17,8 +17,8 @@ The project is in early development and the design is still moving. Read `docs/F
 - Constructor injection, no static facades, no fluent method chaining as the primary API, no promise chaining. Async code uses Amp's Fiber style.
 - Rust code (the shim) is formatted with `rustfmt` and must pass `clippy` without warnings.
 
-The commands that run all of these (`make check`) are added in step P1.3. Until then there is nothing to run.
+Run `make check` to run all of them. The Rust checks are skipped until the shim crate exists (step P3.1).
 
 ## Names
 
-`niphy` is a code name. Avoid spreading it into new places (file names, public strings, protocol fields) beyond what the docs already list. A later rename should be a scripted search and replace.
+The project was renamed from the code name `niphy` to Raphp on 2026-11-06 (D28). Use the new names everywhere: namespace `Raphp\`, `libraphp`, `raphp.json`, `RAPHP_*` variables, C prefix `raphp_`, CLI `rlm`. The old name survives only in the spike code under `spikes/`, which is throwaway and is not renamed. Do not copy `niphy` names from there into new code.

@@ -1,4 +1,4 @@
-# Niphy Framework Document
+# Raphp Framework Document
 
 **Status:** Draft v0.3, 2026-11-06. The Phase 0 spike results (P0.0 to P0.7) and the documentation audit are incorporated. All numbered questions (O1 to O5 and O7 to O13; there is no O6) are resolved or deferred: O5 to Phase 6 by design, and the exact tool versions of O11 to P1.3 (the formatter itself was decided in P1.1, D25). Two un-numbered items are parked, see `IMPLEMENTATION_PLAN.md` section 12. Risks R14 to R22 in section 16 are design gaps found in the audit. They are recorded as Open and have no solution yet.
 **Companion documents:** `IMPLEMENTATION_PLAN.md`, `SPIKE_REPORT.md` (Phase 0 detail)
@@ -23,14 +23,14 @@ If a section contradicts something you said, the section is wrong. Tell me and I
 ## 1. Vision, goals, non-goals
 
 ### 1.1 Vision
-Niphy is a long-running, event-driven runtime and application framework for PHP, with an optional native GUI. It is written the way the PHP community writes PHP (section 4.3).
+Raphp is a long-running, event-driven runtime and application framework for PHP, with an optional native GUI. It is written the way the PHP community writes PHP (section 4.3).
 
-Node.js is only an analogy for the *direction*: a persistent process, an event loop, non-blocking I/O, workers for parallelism, one CLI, single-file executables. Niphy does **not** copy Node's API shapes, naming or code style. **[Decided]**
+Node.js is only an analogy for the *direction*: a persistent process, an event loop, non-blocking I/O, workers for parallelism, one CLI, single-file executables. Raphp does **not** copy Node's API shapes, naming or code style. **[Decided]**
 
-Niphy provides:
+Raphp provides:
 
 1. **An async runtime.** An event loop, a standard library (filesystem, sockets, HTTP, processes, workers), and a single CLI. It is useful with no GUI at all.
-2. **An optional native GUI framework.** The UI is drawn and managed through FFI. Niphy does not render HTML and does not embed a browser engine.
+2. **An optional native GUI framework.** The UI is drawn and managed through FFI. Raphp does not render HTML and does not embed a browser engine.
 3. **Standalone apps.** A finished app ships as a single binary that needs no PHP installed.
 
 Architecturally, a **master** process owns the UI, **worker** processes run application logic, and **IPC** (Unix domain sockets carrying JSON) connects them.
@@ -40,19 +40,19 @@ Architecturally, a **master** process owns the UI, **worker** processes run appl
 - **G2.** Process isolation between UI and logic. A worker crash cannot close the window. **[Decided]**
 - **G3.** Native GUI via FFI through a Rust shim library, with a hybrid design: native where the desktop provides it (file dialogs, clipboard, theme; GNOME has no server-side decorations, so winit draws the title bar), and custom-drawn content including menus (7.7). **[Decided]**
 - **G4.** Standalone binaries. **[Decided]**
-- **G5.** One front-door CLI, `nlm` (niphy libs manager). **[Decided]**
+- **G5.** One front-door CLI, `rlm` (Raphp libs manager). **[Decided]**
 - **G6.** Linux first. **[Decided]**
 - **G7.** Runtime scope is "all tiers", delivered in stages (section 4.2). **[Decided]**
 - **G8.** Follow PHP community standards and idioms: PSRs, Composer, PER Coding Style, strict types, interfaces and dependency injection. No Node-style APIs. **[Decided]**
 - **G9.** Licensed under the MIT License, with semantic versioning. **[Decided]**
 
 ### 1.3 Non-goals
-- Niphy does not render HTML or ship a webview. A developer may *serve* HTML from the runtime (for example from an HTTP server), but that is the developer's code. **[Decided]**
-- Niphy does not imitate Node.js APIs or style: no promise chaining, no fluent "cascading" method chains as the primary API, no copied naming. **[Decided]**
+- Raphp does not render HTML or ship a webview. A developer may *serve* HTML from the runtime (for example from an HTTP server), but that is the developer's code. **[Decided]**
+- Raphp does not imitate Node.js APIs or style: no promise chaining, no fluent "cascading" method chains as the primary API, no copied naming. **[Decided]**
 - No Windows or macOS support in the MVP. **[Decided]**
 - No accessibility (screen readers) in the MVP. The design must not preclude it (section 8.10). **[Decided]**
 - No custom PHP engine, no PHP fork, no custom event loop. **[Proposed]**
-- No niphy-specific package registry. PHP packages come from Packagist. **[Proposed]**
+- No Raphp-specific package registry. PHP packages come from Packagist. **[Proposed]**
 - No network-exposed IPC. Everything stays on the local machine. **[Proposed]**
 
 ---
@@ -64,11 +64,11 @@ Architecturally, a **master** process owns the UI, **worker** processes run appl
 | **Runtime** | The async part: event loop, standard library, process and IPC machinery. Works without a GUI. |
 | **Master** | The process the user launches. It runs the Revolt loop and supervises workers. If the GUI is enabled it also owns the shim and the window. With no GUI it is simply the "main" process. |
 | **Worker** | A child PHP process that runs application logic and async tasks. Spawned and supervised by the master. |
-| **Shim** (`libniphy`) | A Rust shared library loaded into the master via FFI. It owns the UI thread, window, layout, drawing, and the native dialog, clipboard and theme integrations. |
+| **Shim** (`libraphp`) | A Rust shared library loaded into the master via FFI. It owns the UI thread, window, layout, drawing, and the native dialog, clipboard and theme integrations. |
 | **IPC** | The master-to-worker channel: Unix domain stream sockets, one JSON object per line. |
 | **Command** | A message from PHP to the shim ("create widget", "set text"). |
 | **Event** | A message from the shim to PHP ("button clicked", "window resized"). |
-| **`nlm`** | Niphy libs manager, the CLI. Initializes projects, manages PHP and native libraries, runs apps, builds binaries. |
+| **`rlm`** | Raphp libs manager, the CLI. Initializes projects, manages PHP and native libraries, runs apps, builds binaries. |
 | **Revolt** | The PHP event-loop standard (`revolt/event-loop`) that Amp v3 builds on. |
 | **Fiber** | PHP 8.1+ language feature for cooperative suspension. Revolt uses it to make async code look synchronous. |
 | **Micro** | `phpmicro`: a PHP SAPI that lets a phar be appended to a binary, producing a single file. |
@@ -83,11 +83,11 @@ Architecturally, a **master** process owns the UI, **worker** processes run appl
 ```
                          ┌────────────────────────── master process ───────────────────────────┐
   user launches          │  Revolt loop                                                          │
-  `app` / `nlm run`  ──▶ │   ├─ UI layer (PHP): widget tree, diff, command batcher               │
+  `app` / `rlm run`  ──▶ │   ├─ UI layer (PHP): widget tree, diff, command batcher               │
                          │   ├─ Supervisor: spawns, watches, restarts workers                    │
                          │   └─ IPC endpoints ───────────────────────────────┐                   │
                          │                                                   │                   │
-                         │   FFI ◀──── commands (batched) ────▶ libniphy     │                   │
+                         │   FFI ◀──── commands (batched) ────▶ libraphp     │                   │
                          │       ◀──── events (eventfd + poll) ──  (Rust)    │                   │
                          │                                         UI thread │                   │
                          │                                         window, layout, drawing       │
@@ -113,11 +113,11 @@ PHP never receives a callback from C. All shim-to-PHP traffic is data that PHP p
 
 ### 3.3 Modes
 - **GUI mode:** master + shim + workers.
-- **Headless mode:** master (no shim) + workers. Used for servers, CLIs and tests. The same runtime code path, with `niphy/ui` simply not loaded.
+- **Headless mode:** master (no shim) + workers. Used for servers, CLIs and tests. The same runtime code path, with `raphp/ui` simply not loaded.
 - **Single-process mode:** no workers. Handlers run in the master. Appropriate for small apps and for debugging. **[Proposed]**
 
 ### 3.4 One binary, several roles
-A built app is one executable that re-executes itself with a role flag (`--role=worker`). In development, `nlm` runs the same entry point under a managed PHP. **[Proposed]** Re-execution from inside a micro binary works, using `readlink('/proc/self/exe')` (10.2). **[Verified, P0.6]**
+A built app is one executable that re-executes itself with a role flag (`--role=worker`). In development, `rlm` runs the same entry point under a managed PHP. **[Proposed]** Re-execution from inside a micro binary works, using `readlink('/proc/self/exe')` (10.2). **[Verified, P0.6]**
 
 ---
 
@@ -126,15 +126,15 @@ A built app is one executable that re-executes itself with a role flag (`--role=
 ### 4.1 Event loop
 - One Revolt loop per process, in the master and in every worker. **[Proposed]**
 - Application code runs inside Fibers started by `async()`. Code reads sequentially and suspends on I/O. **[Proposed]**
-- **Rule:** nothing on the loop may block. Blocking calls (`sleep`, `file_get_contents`, PDO, `curl_exec`) freeze the whole process. `nlm doctor` and the docs list safe replacements. CPU-heavy work goes to a process pool (4.4).
+- **Rule:** nothing on the loop may block. Blocking calls (`sleep`, `file_get_contents`, PDO, `curl_exec`) freeze the whole process. `rlm doctor` and the docs list safe replacements. CPU-heavy work goes to a process pool (4.4).
 - **Rule:** cancel the Revolt watchers on a stream before closing that stream. Otherwise `stream_select` crashes on a dead resource. **[Verified, P0.2]**
 
 ### 4.2 Standard library tiers **[Decided: all tiers, staged]**
-Niphy exposes its own namespaced services (`Niphy\Filesystem`, `Niphy\Network`, `Niphy\Http`, ...) as interfaces with default implementations over curated Amp packages. We do not reimplement what Amp already does well, and the interfaces keep us free to swap implementations.
+Raphp exposes its own namespaced services (`Raphp\Filesystem`, `Raphp\Network`, `Raphp\Http`, ...) as interfaces with default implementations over curated Amp packages. We do not reimplement what Amp already does well, and the interfaces keep us free to swap implementations.
 
 | Tier | Contents | Built on |
 |---|---|---|
-| **1** | Loop and timers, streams, fs, child processes, signals, workers, IPC | `revolt/event-loop`, `amphp/byte-stream`, `amphp/file`, `amphp/process` for user commands (not for niphy workers, see 5.1) |
+| **1** | Loop and timers, streams, fs, child processes, signals, workers, IPC | `revolt/event-loop`, `amphp/byte-stream`, `amphp/file`, `amphp/process` for user commands (not for Raphp workers, see 5.1) |
 | **2** | TCP/UDP/Unix sockets, HTTP client and server, WebSocket | `amphp/socket`, `amphp/http-client`, `amphp/http-server`, `amphp/websocket-*` |
 | **3** | TLS, crypto, zlib, DNS, os/path/url helpers, permissions model | PHP extensions (`openssl`, `sodium`, `zlib`), `amphp/dns` |
 
@@ -148,7 +148,7 @@ Niphy exposes its own namespaced services (`Niphy\Filesystem`, `Niphy\Network`, 
 - **No fluent cascading.** Configuration uses constructors with named arguments and immutable value objects, not long method chains. **[Decided]**
 - **Async.** Operations suspend the current Fiber and return the value, as in Amp v3. Parallelism is explicit (Amp's `async()`, `await()`, `Future\awaitAll()`). No promise chaining. **[Decided, O10]**
 - Cancellation uses Amp's `Cancellation` objects, accepted as an optional trailing argument.
-- Errors are typed exceptions under `Niphy\Error\*`. IPC errors map to the codes in 6.6.
+- Errors are typed exceptions under `Raphp\Error\*`. IPC errors map to the codes in 6.6.
 - Streams use Amp's readable and writable stream interfaces.
 
 ### 4.4 Heavy work
@@ -164,12 +164,12 @@ PHP leaks and fragmentation matter once a process runs for days. Workers can be 
 
 ### 4.7 Futures, cancellation and errors
 
-Niphy has **no promises**. The only "value that is not ready yet" type is `Amp\Future<T>`. **[Source-checked]** against `amphp/amp` v3.1.3.
+Raphp has **no promises**. The only "value that is not ready yet" type is `Amp\Future<T>`. **[Source-checked]** against `amphp/amp` v3.1.3.
 
 **Using futures**
 - `async(Closure $fn, ...$args): Future` starts work in a new Fiber. `$future->await(?Cancellation)` suspends the caller until the result (or exception) arrives.
-- Application code awaits and uses ordinary `try`/`catch`/`finally`. `Future::map()`, `catch()` and `finally()` exist, but they are for library internals. Niphy application code does not chain them. **[Decided, O10]**
-- `DeferredFuture` bridges callback or event sources into futures. Niphy uses it internally, for example to match an IPC `res` message to the request that is waiting for it (by `id`) and to turn shim events into awaitable values. It is not part of the everyday application API.
+- Application code awaits and uses ordinary `try`/`catch`/`finally`. `Future::map()`, `catch()` and `finally()` exist, but they are for library internals. Raphp application code does not chain them. **[Decided, O10]**
+- `DeferredFuture` bridges callback or event sources into futures. Raphp uses it internally, for example to match an IPC `res` message to the request that is waiting for it (by `id`) and to turn shim events into awaitable values. It is not part of the everyday application API.
 
 **Combining futures** (functions in the `Amp\Future` namespace, for example `Amp\Future\awaitAll()`; Amp v3.1.3, source-checked):
 
@@ -182,14 +182,14 @@ Niphy has **no promises**. The only "value that is not ready yet" type is `Amp\F
 | `awaitAnyN($n, $futures)` | The first `n` successes. Throws `CompositeException` if too many futures error to reach `n`, and `CompositeLengthException` if `$futures` is empty. |
 
 **Cancellation** uses Amp's types: `Cancellation`, `DeferredCancellation`, `TimeoutCancellation`, `SignalCancellation`, `CompositeCancellation`, `NullCancellation`, and `CancelledException`.
-- Every niphy API that waits or does I/O takes `?Cancellation $cancellation = null` as its **last** parameter. **[Proposed]**
+- Every Raphp API that waits or does I/O takes `?Cancellation $cancellation = null` as its **last** parameter. **[Proposed]**
 - An IPC `cancel` message trips a `DeferredCancellation` handed to the handler (6.7).
 
-**Unhandled futures.** A future that errors and is destroyed without being awaited raises `UnhandledFutureError`, unless `ignore()` was called. **[Source-checked]**: `Internal/FutureState.php` constructs `UnhandledFutureError`, and `Future::ignore()` exists. For fire-and-forget work, niphy provides a supervised task runner that logs failures (PSR-3) instead of crashing or silently swallowing them. **[Proposed]**
+**Unhandled futures.** A future that errors and is destroyed without being awaited raises `UnhandledFutureError`, unless `ignore()` was called. **[Source-checked]**: `Internal/FutureState.php` constructs `UnhandledFutureError`, and `Future::ignore()` exists. For fire-and-forget work, Raphp provides a supervised task runner that logs failures (PSR-3) instead of crashing or silently swallowing them. **[Proposed]**
 
 **Uncaught errors.** An uncaught exception on the master loop is logged, triggers graceful shutdown, and exits non-zero. In a worker it exits non-zero so the supervisor restarts it (5.4). **[Decided, O12]**
 
-**ReactPHP interop** (awaiting ReactPHP promises inside niphy code) is not planned for the MVP. Parked (`IMPLEMENTATION_PLAN.md` section 12).
+**ReactPHP interop** (awaiting ReactPHP promises inside Raphp code) is not planned for the MVP. Parked (`IMPLEMENTATION_PLAN.md` section 12).
 
 ### 4.8 Middleware and pipelines
 
@@ -197,10 +197,10 @@ Niphy has **no promises**. The only "value that is not ready yet" type is `Amp\F
 
 **What Amp does.** `amphp/http-server` does **not** implement PSR-7 or PSR-15. It has its own `Amp\Http\Server\Middleware` interface, `handleRequest(Request $request, RequestHandler $requestHandler): Response`, with its own `Request` class. It uses PSR-7 only for the URI type. **[Source-checked]** against `amphp/http-server` v3.4.8: `Middleware::handleRequest(Request, RequestHandler): Response`, and PSR-7 types appear only in `Request.php` and `Push.php`. The pattern is the same onion shape as PSR-15, but the types differ.
 
-**Niphy's approach** **[Decided, O13]**
+**Raphp's approach** **[Decided, O13]**
 
 1. **HTTP server (tier 2).** Use Amp's native `Middleware` and `RequestHandler` as they are. We do not invent a third HTTP middleware API. A PSR-15 bridge is built only if users need existing PSR-15 middleware, and that is decided when tier 2 starts.
-2. **Niphy's own pipelines** (worker RPC dispatch, master-side worker calls, UI event handling) use one contract shaped like PSR-15 so PHP developers recognize it:
+2. **Raphp's own pipelines** (worker RPC dispatch, master-side worker calls, UI event handling) use one contract shaped like PSR-15 so PHP developers recognize it:
 
 ```php
 interface RpcMiddleware
@@ -248,15 +248,15 @@ Rules:
 
 ### 4.9 Other common patterns
 
-| Need | PHP idiom | Niphy plan |
+| Need | PHP idiom | Raphp plan |
 |---|---|---|
 | Notifications and observers | PSR-14 event dispatcher | Listeners may suspend. They are invoked in order within the dispatching Fiber. |
 | Wiring services | PSR-11 container, constructor injection | No facades (O9). Default container implementation chosen in Phase 1. |
 | Logging | PSR-3 | Monolog as the default implementation. Worker logs are aggregated at the master (14). |
-| Configuration | Typed config objects | Loaded from `niphy.json` plus environment. No global `config()` helper. |
+| Configuration | Typed config objects | Loaded from `raphp.json` plus environment. No global `config()` helper. |
 | Time | PSR-20 clock | For wall-clock timestamps and testable "what time is it" logic (injected, so tests control it). Elapsed-time measurement uses a monotonic source (`hrtime(true)` or `Amp\now()`), because wall-clock time can step. Timers use Amp's `delay()`. **[Proposed]** |
 | Streams and async iteration | `amphp/pipeline` (`Pipeline`, `ConcurrentIterator`) and byte streams | Used for progress streams and multi-value results. |
-| Retry, backoff, circuit breaker | Small value-object policies | A `RetryPolicy` in niphy, applied through middleware. |
+| Retry, backoff, circuit breaker | Small value-object policies | A `RetryPolicy` in Raphp, applied through middleware. |
 | Resource cleanup | `try`/`finally`, Amp `Closable` | Never rely on destructors for correctness. |
 | Locks and semaphores | `amphp/sync` | Used where shared resources need coordination. |
 | Caching | A cache interface | PSR-16 adapter only if needed. |
@@ -267,16 +267,16 @@ Rules:
 
 ### 5.1 Spawning **[Proposed]**
 The master spawns workers with raw `proc_open`, re-executing the same binary with `--role=worker --name=<worker>`. Rules:
-- The command must be an **array** (the path from `readlink('/proc/self/exe')`, then `--role=worker`, `--name=<worker>`), never a string. A string makes `/bin/sh` the child's parent, which breaks parent-death detection (5.6). **[Verified: spikes P0.2, P0.3 and P0.6 use array commands. That a string breaks PDEATHSIG is derived from how PDEATHSIG works (finding F2), not a separate test.]** The exact argument list is decided in P2.9: in a micro binary the first element is the binary itself, but in development (non-micro, run by `nlm`) it is the PHP binary and the entry script must be passed too, and the expected parent pid is also an argument (5.6). **[Open]**
-- The IPC channel is passed as descriptor 3 (6.2). It must be created with `socket_create_pair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, ...)` plus `socket_export_stream` on both ends. Every descriptor niphy creates must be close-on-exec, otherwise workers inherit other endpoints and never see EOF. The parent closes its copy of the child's end right after `proc_open` returns. **[Verified, spike P0.2]**
+- The command must be an **array** (the path from `readlink('/proc/self/exe')`, then `--role=worker`, `--name=<worker>`), never a string. A string makes `/bin/sh` the child's parent, which breaks parent-death detection (5.6). **[Verified: spikes P0.2, P0.3 and P0.6 use array commands. That a string breaks PDEATHSIG is derived from how PDEATHSIG works (finding F2), not a separate test.]** The exact argument list is decided in P2.9: in a micro binary the first element is the binary itself, but in development (non-micro, run by `rlm`) it is the PHP binary and the entry script must be passed too, and the expected parent pid is also an argument (5.6). **[Open]**
+- The IPC channel is passed as descriptor 3 (6.2). It must be created with `socket_create_pair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, ...)` plus `socket_export_stream` on both ends. Every descriptor Raphp creates must be close-on-exec, otherwise workers inherit other endpoints and never see EOF. The parent closes its copy of the child's end right after `proc_open` returns. **[Verified, spike P0.2]**
 - stdout and stderr are captured as pipes.
 - Workers may rely only on fds 0 to 3. The parent's own script descriptor is also inherited (observed as fd 4 in spike P0.2). It is harmless for EOF detection and not part of the contract. **[Verified, F4]**
-- Niphy workers are not spawned through `amphp/process`. Its POSIX runner wraps every command in a `/bin/sh` script with a trap on INT, TERM, QUIT and HUP, and uses descriptor 3 for its own pid pipe. `Process::start` also turns an array command into one shell string. **[Source-checked: read in the `amphp/process` source, F18. Not run in a spike.]**
-- **[Open, R17]** Descriptors that the shim's libraries create (Wayland or X11 connection, D-Bus, portals, clipboard, IME) are not created by niphy, so the close-on-exec rule does not cover them. Combining `proc_open` with a live multi-threaded shim in the master has not been tested. The contract is not yet defined.
+- Raphp workers are not spawned through `amphp/process`. Its POSIX runner wraps every command in a `/bin/sh` script with a trap on INT, TERM, QUIT and HUP, and uses descriptor 3 for its own pid pipe. `Process::start` also turns an array command into one shell string. **[Source-checked: read in the `amphp/process` source, F18. Not run in a spike.]**
+- **[Open, R17]** Descriptors that the shim's libraries create (Wayland or X11 connection, D-Bus, portals, clipboard, IME) are not created by Raphp, so the close-on-exec rule does not cover them. Combining `proc_open` with a live multi-threaded shim in the master has not been tested. The contract is not yet defined.
 - **[Open, R18]** Reaping workers and draining their stdout and stderr are not yet specified.
 
 ### 5.2 Declaring workers
-Workers are declared in `niphy.json` (section 9.2) as `name → entry file`, with an optional pool size. A pool of size N is N separate processes behind one logical name, load-balanced round-robin or least-busy. **[Proposed]**
+Workers are declared in `raphp.json` (section 9.2) as `name → entry file`, with an optional pool size. A pool of size N is N separate processes behind one logical name, load-balanced round-robin or least-busy. **[Proposed]**
 
 ### 5.3 Lifecycle states
 `starting → handshaking → ready → draining → exited | crashed | degraded`
@@ -296,7 +296,7 @@ Workers are declared in `niphy.json` (section 9.2) as `name → entry file`, wit
 ### 5.5 Graceful shutdown
 `bye` message, then a grace period (default 5 s), then SIGTERM, then SIGKILL. The same sequence applies when the master exits.
 
-**[Open, R14]** This sequence covers workers only. It does not say when the shim is shut down (`niphy_shutdown` joins the UI thread), what happens if the shim's own UI thread fails, or what runs when `exit()` is called from inside a Fiber. These must be defined before the shim is used in production code (Phase 3).
+**[Open, R14]** This sequence covers workers only. It does not say when the shim is shut down (`raphp_shutdown` joins the UI thread), what happens if the shim's own UI thread fails, or what runs when `exit()` is called from inside a Fiber. These must be defined before the shim is used in production code (Phase 3).
 
 ### 5.6 Orphan prevention
 A worker exits when its IPC socket reaches EOF. In addition, at startup it calls `prctl(PR_SET_PDEATHSIG, SIGTERM)` through libc FFI, so the kernel sends it SIGTERM when the master dies, including when the master is SIGKILLed and no cleanup code runs. Rules:
@@ -308,7 +308,7 @@ A worker exits when its IPC socket reaches EOF. In addition, at startup it calls
 **[Verified, spike P0.3]** With a default SIGTERM action and an idle loop, the child was gone 5 to 9 ms after a master SIGKILL. Without `prctl` (control test) the child was still alive at the end of the 3 s observation window. The busy-loop behavior in rule 3 is reasoning, not a spike result.
 
 ### 5.7 Hot reload
-`nlm dev` watches source files. A change restarts the affected worker only. The window and UI state survive. Worker in-memory state is lost by design, and the docs must say so. **[Proposed]**
+`rlm dev` watches source files. A change restarts the affected worker only. The window and UI state survive. Worker in-memory state is lost by design, and the docs must say so. **[Proposed]**
 
 **[Open, R21]** This covers worker code only. Because views and handlers run in the master (8.4), most development edits land in master code, and this section does not say what happens then (the window and UI state would be lost). It also does not say whether a restart caused by a file change counts toward the K-in-T `degraded` rule (5.4), or what happens to in-flight calls during a reload.
 
@@ -322,8 +322,8 @@ A `Transport` interface hides the mechanism so Windows named pipes can be added 
 ### 6.2 Connection establishment **[Decided, O1; changes the earlier plan]**
 The earlier plan used a path-based socket plus a random token handshake. A simpler and stronger alternative:
 
-- **Primary:** the master creates a pair per worker with `socket_create_pair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, $raw)` (ext-sockets) and wraps both ends with `socket_export_stream`. It passes the child's end to `proc_open` as descriptor 3, then, once `proc_open` has returned, `fclose`s its own copy of the child's end and sets its own end non-blocking. The child opens descriptor 3 with `php://fd/3`. There is no filesystem path, nothing to authenticate, and only the parent and child hold the descriptor. `stream_socket_pair` must not be used: it does not set close-on-exec, so the child inherits the parent's end (and other descriptors) and never sees EOF. Every descriptor niphy creates must be close-on-exec, because `proc_open` children inherit any descriptor that is not. This makes `ext-sockets` a hard requirement. **[Verified, spike P0.2]**
-- **Secondary (for attachable clients such as `nlm` inspectors or independently started workers) [Proposed]:** a listening socket at `$XDG_RUNTIME_DIR/niphy/<app-id>/<session>/<name>.sock`, directory mode 0700, socket mode 0600, with a token in `hello`. An optional `SO_PEERCRED` uid check could be added on top. **[Open, R22]** PHP 8.5.12 with ext-sockets does not define the `SO_PEERCRED` constant here, and `amphp/socket` 2.4.1 has no peer-credential API. No working route from PHP is confirmed, so how this path authenticates beyond the token is unspecified. This path is secondary and is not built before it is needed.
+- **Primary:** the master creates a pair per worker with `socket_create_pair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, $raw)` (ext-sockets) and wraps both ends with `socket_export_stream`. It passes the child's end to `proc_open` as descriptor 3, then, once `proc_open` has returned, `fclose`s its own copy of the child's end and sets its own end non-blocking. The child opens descriptor 3 with `php://fd/3`. There is no filesystem path, nothing to authenticate, and only the parent and child hold the descriptor. `stream_socket_pair` must not be used: it does not set close-on-exec, so the child inherits the parent's end (and other descriptors) and never sees EOF. Every descriptor Raphp creates must be close-on-exec, because `proc_open` children inherit any descriptor that is not. This makes `ext-sockets` a hard requirement. **[Verified, spike P0.2]**
+- **Secondary (for attachable clients such as `rlm` inspectors or independently started workers) [Proposed]:** a listening socket at `$XDG_RUNTIME_DIR/raphp/<app-id>/<session>/<name>.sock`, directory mode 0700, socket mode 0600, with a token in `hello`. An optional `SO_PEERCRED` uid check could be added on top. **[Open, R22]** PHP 8.5.12 with ext-sockets does not define the `SO_PEERCRED` constant here, and `amphp/socket` 2.4.1 has no peer-credential API. No working route from PHP is confirmed, so how this path authenticates beyond the token is unspecified. This path is secondary and is not built before it is needed.
 
 **[Decided, O1]** Socket pair is primary. Verified in Phase 0 (spike P0.2) with the `SOCK_CLOEXEC` condition above. The test used one worker only. Back-pressure: a 16 MiB write to a stalled child worked with a non-blocking writer, the loop kept ticking (max gap about 19 ms), and all 16,777,217 bytes arrived.
 
@@ -372,11 +372,11 @@ Both sides send `hello` immediately after connecting. `proto` is an integer. A m
 Bulk data (images, buffers) uses a shared-memory lane (`shmop` or FFI `mmap`). Only a handle travels over IPC, and capability `shm` is negotiated in `hello`.
 
 ### 6.10 Security
-Same-uid only. Socket-pair inheritance means no path to attack. Every niphy descriptor must be close-on-exec (6.2). This is also a security rule, so that a worker never holds another worker's endpoint. Path sockets use a 0700 directory, a 0600 socket and a token in `hello` as the baseline defence. A `SO_PEERCRED` uid check is an optional add-on and is **[Open, R22]** (see 6.2). IPC is never bound to a network interface. JSON decoding enforces depth and size limits.
+Same-uid only. Socket-pair inheritance means no path to attack. Every Raphp descriptor must be close-on-exec (6.2). This is also a security rule, so that a worker never holds another worker's endpoint. Path sockets use a 0700 directory, a 0600 socket and a token in `hello` as the baseline defence. A `SO_PEERCRED` uid check is an optional add-on and is **[Open, R22]** (see 6.2). IPC is never bound to a network interface. JSON decoding enforces depth and size limits.
 
 ---
 
-## 7. The shim (`libniphy`)
+## 7. The shim (`libraphp`)
 
 ### 7.1 Responsibilities
 The shim owns everything that must run on a real thread against the OS: window, input, layout, text, drawing, native dialogs, clipboard and tray, plus drawn menus. PHP describes *what* to show and reacts to events. PHP never draws a pixel and never runs per frame. **[Decided]**
@@ -392,25 +392,25 @@ The shim owns everything that must run on a real thread against the OS: window, 
 ### 7.3 C ABI (draft v0) **[Proposed]**
 
 ```c
-typedef struct NiphyShim NiphyShim;
+typedef struct RaphpShim RaphpShim;
 
-uint32_t   niphy_abi_version(void);                 // major<<16 | minor; PHP checks at load
-NiphyShim* niphy_init(const char* cfg_json, size_t len);
-int        niphy_event_fd(const NiphyShim*);        // readable when events are queued
-intptr_t   niphy_poll(const NiphyShim*, char* out, size_t cap);
-int        niphy_send(const NiphyShim*, const char* batch, size_t len);
-size_t     niphy_last_error(const NiphyShim*, char* out, size_t cap);
-void       niphy_shutdown(NiphyShim*);
+uint32_t   raphp_abi_version(void);                 // major<<16 | minor; PHP checks at load
+RaphpShim* raphp_init(const char* cfg_json, size_t len);
+int        raphp_event_fd(const RaphpShim*);        // readable when events are queued
+intptr_t   raphp_poll(const RaphpShim*, char* out, size_t cap);
+int        raphp_send(const RaphpShim*, const char* batch, size_t len);
+size_t     raphp_last_error(const RaphpShim*, char* out, size_t cap);
+void       raphp_shutdown(RaphpShim*);
 ```
 
 Rules:
 - Strings are UTF-8 with explicit lengths, never NUL-terminated assumptions.
 - The shim copies every input. PHP owns every output buffer. The shim never returns an allocation to PHP, so there is nothing for PHP to free.
-- `niphy_poll` returns whole events only: bytes written (always ending in `\n`), `0` for none, `-1` if the next single event exceeds `cap`. **[Open, R16]** What happens to the oversized event after `-1` is not defined: whether it stays at the head of the queue, how PHP learns the size it needs, and what PHP does next. If PHP leaves its drain loop on `-1`, the eventfd has already been cleared and the head event can block every later event, including clicks and key presses. Realistic large events are clipboard paste, drag-and-drop file lists and IME text. This must be resolved, with a test, before the ABI is frozen (Phase 3).
+- `raphp_poll` returns whole events only: bytes written (always ending in `\n`), `0` for none, `-1` if the next single event exceeds `cap`. **[Open, R16]** What happens to the oversized event after `-1` is not defined: whether it stays at the head of the queue, how PHP learns the size it needs, and what PHP does next. If PHP leaves its drain loop on `-1`, the eventfd has already been cleared and the head event can block every later event, including clicks and key presses. Realistic large events are clipboard paste, drag-and-drop file lists and IME text. This must be resolved, with a test, before the ABI is frozen (Phase 3).
 - The header is generated with `cbindgen`, committed to the repo, and loaded on the PHP side via `FFI::cdef`.
 - **Panics never cross the ABI.** Every `extern "C"` function runs under `catch_unwind`. A panic marks the shim poisoned, emits an error event, and later calls fail cleanly.
 - **[Open, R14]** This rule covers only calls into the shim. A panic or exit on the shim's own UI thread is not covered, and neither is the shim's place in the shutdown order (5.5). With `panic = "abort"` such a panic would abort the whole master process and, through PDEATHSIG (5.6), every worker, which defeats G2. With `panic = "unwind"` and no catch in the thread body, only the UI thread dies: the window disappears while the master keeps running, and no error event is written. The build setting, the thread-body policy and the master's reaction are not yet defined. Phase 3 must resolve this.
-- ABI compatibility: minor bumps add functions, major bumps break. `nlm doctor` and runtime startup both check `niphy_abi_version()`.
+- ABI compatibility: minor bumps add functions, major bumps break. `rlm doctor` and runtime startup both check `raphp_abi_version()`.
 
 ### 7.4 Command protocol (PHP → shim)
 - A **batch** is a JSON array of commands: `{"op": "...", ...}`. PHP builds one batch per loop tick and sends it in a single FFI call. **[Verified feasible, Appendix A]**
@@ -421,7 +421,7 @@ Rules:
 
 ### 7.5 Event protocol (shim → PHP) **[Proposed]**
 - Events are appended as NDJSON to an **in-memory queue** inside the shim. An `eventfd` is written to wake PHP. **[Verified, Appendix A]**
-- PHP's loop watches the eventfd. On wake: **clear the eventfd first, then drain with `niphy_poll` until it returns 0.** This order cannot lose a wake-up. **[Proposed]** This is a design rule. The order itself was not tested separately. (On `-1` from `niphy_poll`, see the open item R16 in 7.3.)
+- PHP's loop watches the eventfd. On wake: **clear the eventfd first, then drain with `raphp_poll` until it returns 0.** This order cannot lose a wake-up. **[Proposed]** This is a design rule. The order itself was not tested separately. (On `-1` from `raphp_poll`, see the open item R16 in 7.3.)
 - **The fd is only a wake-up, never the buffer.** A pipe-as-buffer design was tested and dropped 88% of events when PHP stalled for 300 ms. The in-memory queue lost none (Appendix A). **[Verified, Appendix A]**
 - **Coalescing rules** (applied in the shim, per window, per loop turn): pointer-move, scroll and resize keep only the latest value. Discrete events (click, key, text input, focus, close) are never coalesced or dropped. **[Proposed]** P0.1 observed pointer-move events delivered and coalesced. Scroll, resize and the discrete-event guarantees are untested, and keyboard and click events are untested.
 - **Queue limits:** discrete events are never dropped. The queue policy beyond a size cap (back-pressure the UI, aggressive coalescing, or abort) is **[Decided, O7]**: coalesce harder first, then back-pressure, and never drop discrete events.
@@ -435,7 +435,7 @@ Rules:
 - Phase 0 finding F8: redraws must be paced to the compositor and dirty-driven, not polled. **[Proposed]**
 
 ### 7.7 Native chrome (hybrid, reading (i)) **[Decided]**
-Native (OS-provided): file dialogs through the `xdg-desktop-portal` FileChooser, clipboard through `smithay-clipboard` on Wayland, the system theme setting, and an optional tray. The window itself is created through winit, and its decorations are winit's client-side ones on GNOME/Wayland, which offers no server-side decorations. Drawn by niphy inside the window: menus and popups. Everything inside the window is custom-drawn.
+Native (OS-provided): file dialogs through the `xdg-desktop-portal` FileChooser, clipboard through `smithay-clipboard` on Wayland, the system theme setting, and an optional tray. The window itself is created through winit, and its decorations are winit's client-side ones on GNOME/Wayland, which offers no server-side decorations. Drawn by Raphp inside the window: menus and popups. Everything inside the window is custom-drawn.
 
 Findings on GNOME 50.5 Wayland **[Verified, P0.4; Decided: option (a), GNOME first, improve later]**:
 1. winit 0.30.13 has no `xdg_popup` support, so menus cannot extend beyond the window and are drawn in-window.
@@ -452,7 +452,7 @@ The GTK4 window path (b) is not pursued. **[Decided]** **[Verified, chrome exper
 The shim exposes a `headless` backend with no window system dependency. It runs layout and the command/event machinery without drawing to a screen, so CI can test the whole PHP-to-shim path on machines with no display.
 
 ### 7.9 Build and distribution
-One Rust `cdylib` per architecture, linked against glibc. The version is pinned in the project lock file. `nlm` fetches prebuilt binaries and verifies checksums. Building from source requires a Rust toolchain.
+One Rust `cdylib` per architecture, linked against glibc. The version is pinned in the project lock file. `rlm` fetches prebuilt binaries and verifies checksums. Building from source requires a Rust toolchain.
 
 **glibc floor.** The shim's highest required `GLIBC_` symbol version was 2.34 (headless) and 2.43 (windowed), measured with `objdump -T` on this machine (host glibc 2.43). PHP and the app need only 2.17. So the distributable floor is set by how the shim is built, not by PHP. **[Verified, F14]** Not yet run on any other distro. Building the shim against an old glibc (for example `cargo-zigbuild` with a `.2.17` target, or an old-distro container) would avoid raising the floor (D21, R23). **[Proposed, needs user approval]**
 
@@ -532,25 +532,25 @@ From day one every widget has a stable id, a semantic role and an optional label
 
 ---
 
-## 9. `nlm` (niphy libs manager)
+## 9. `rlm` (Raphp libs manager)
 
-### 9.1 Role **[Decided: replaces `niphy run`]**
-`nlm` is the single front door for the project: it wraps Composer for PHP packages, manages native libraries, and runs and builds the app.
+### 9.1 Role **[Decided: replaces the earlier `run` command idea]**
+`rlm` is the single front door for the project: it wraps Composer for PHP packages, manages native libraries, and runs and builds the app.
 
 | Command | Purpose |
 |---|---|
-| `nlm init` | Scaffold a project (`niphy.json`, `composer.json`, entry files) |
-| `nlm add <pkg>` / `remove` | Add or remove a PHP package (delegates to Composer) |
-| `nlm install` | Install PHP packages and native libs from lock files |
-| `nlm update` | Update within constraints |
-| `nlm run [file]` | Run the app or a script |
-| `nlm dev` | Run with file watching and worker hot reload |
-| `nlm build` | Produce the standalone binary |
-| `nlm doctor` | Check ffi, extensions, shim ABI, display, glibc |
-| `nlm lib list\|pin\|verify` | Inspect and manage native libs |
+| `rlm init` | Scaffold a project (`raphp.json`, `composer.json`, entry files) |
+| `rlm add <pkg>` / `remove` | Add or remove a PHP package (delegates to Composer) |
+| `rlm install` | Install PHP packages and native libs from lock files |
+| `rlm update` | Update within constraints |
+| `rlm run [file]` | Run the app or a script |
+| `rlm dev` | Run with file watching and worker hot reload |
+| `rlm build` | Produce the standalone binary |
+| `rlm doctor` | Check ffi, extensions, shim ABI, display, glibc |
+| `rlm lib list\|pin\|verify` | Inspect and manage native libs |
 
 ### 9.2 Manifest **[Proposed]**
-`composer.json` stays the source of truth for PHP dependencies. `niphy.json` holds niphy-specific configuration. `nlm add` runs `composer require` underneath.
+`composer.json` stays the source of truth for PHP dependencies. `raphp.json` holds Raphp-specific configuration. `rlm add` runs `composer require` underneath.
 
 ```jsonc
 {
@@ -558,20 +558,20 @@ From day one every widget has a stable id, a semantic role and an optional label
   "entry": "src/main.php",
   "workers": { "main": { "entry": "src/worker.php", "pool": 1 } },
   "ui": { "enabled": true, "backend": "default" },
-  "libs": { "libniphy": "^0.1" },
+  "libs": { "libraphp": "^0.1" },
   "php": { "extensions": ["ffi", "pcntl", "posix", "sockets"], "ini": {} },
   "build": { "output": "dist/files", "embedShim": true }
 }
 ```
 
 ### 9.3 Native libs **[Proposed]**
-Prebuilt `libniphy` per architecture is stored under `~/.local/share/nlm/libs/<name>/<version>/`. `nlm.lock` records versions and sha256. The runtime loads native libs only from a verified store path and never relies on `LD_LIBRARY_PATH`.
+Prebuilt `libraphp` per architecture is stored under `~/.local/share/rlm/libs/<name>/<version>/`. `rlm.lock` records versions and sha256. The runtime loads native libs only from a verified store path and never relies on `LD_LIBRARY_PATH`.
 
 ### 9.4 PHP provisioning **[Decided, O3]**
-Option A: use the system PHP and let `nlm doctor` report what is missing (this machine needed `php-ffi` installed first). Option B: download a managed static-php-cli PHP build into the lib store so versions are reproducible. Default: B, with A as an opt-out. `nlm` itself is written in PHP and distributed as a standalone binary, bootstrapped from a prebuilt build. **[Verified, P0.5]** A static-php-cli build of PHP 8.5.12 with the needed extensions succeeded on this machine (10.2), so a managed build is feasible. The minimum glibc is still to be chosen (R23, O5).
+Option A: use the system PHP and let `rlm doctor` report what is missing (this machine needed `php-ffi` installed first). Option B: download a managed static-php-cli PHP build into the lib store so versions are reproducible. Default: B, with A as an opt-out. `rlm` itself is written in PHP and distributed as a standalone binary, bootstrapped from a prebuilt build. **[Verified, P0.5]** A static-php-cli build of PHP 8.5.12 with the needed extensions succeeded on this machine (10.2), so a managed build is feasible. The minimum glibc is still to be chosen (R23, O5).
 
 ### 9.5 Dev experience
-`nlm dev`: file watcher, worker-only restart, IPC trace (`NIPHY_IPC_TRACE=1`), log aggregation in the terminal.
+`rlm dev`: file watcher, worker-only restart, IPC trace (`RAPHP_IPC_TRACE=1`), log aggregation in the terminal.
 
 ---
 
@@ -609,9 +609,9 @@ Single file (shim embedded) or a bundle directory (binary plus `lib/`). The size
 
 - **Trust boundary:** same-user processes on one machine. No network exposure.
 - **Workers are not sandboxed** in the MVP. A future option is Landlock or seccomp. Parked (`IMPLEMENTATION_PLAN.md` section 12).
-- **FFI is unsafe by nature.** A bug there can crash or corrupt the process. All FFI code lives in dedicated `Ffi` namespaces, each behind a typed interface. The UI shim binding lives in `Niphy\Ui\Ffi` (part of `niphy/ui`). The runtime's libc calls (`prctl` in 5.6, and `mmap` for the shm lane if used) live in a separate runtime-side namespace, chosen in Phase 2, that does not depend on `niphy/ui`, so headless mode (3.3) can use it without loading the UI package. **[Proposed]**
+- **FFI is unsafe by nature.** A bug there can crash or corrupt the process. All FFI code lives in dedicated `Ffi` namespaces, each behind a typed interface. The UI shim binding lives in `Raphp\Ui\Ffi` (part of `raphp/ui`). The runtime's libc calls (`prctl` in 5.6, and `mmap` for the shm lane if used) live in a separate runtime-side namespace, chosen in Phase 2, that does not depend on `raphp/ui`, so headless mode (3.3) can use it without loading the UI package. **[Proposed]**
 - **Untrusted input:** JSON size and depth limits, strict UTF-8, no `unserialize` on IPC data.
-- **Supply chain:** `nlm` verifies checksums for native libs and writes `nlm.lock`.
+- **Supply chain:** `rlm` verifies checksums for native libs and writes `rlm.lock`.
 
 ---
 
@@ -635,7 +635,7 @@ Single file (shim embedded) or a bundle directory (binary plus `lib/`). The size
 
 - Structured logs. Worker stdout/stderr and log events are aggregated at the master with the worker name and a level.
 - Envelope may carry an optional `trace` id propagated through calls. **[Proposed]**
-- `NIPHY_IPC_TRACE=1` logs every IPC message.
+- `RAPHP_IPC_TRACE=1` logs every IPC message.
 - Debuggers: Xdebug with multiple processes needs documented setup.
 - Crash reports: master records worker exit status and the last N log lines. How the exit status is collected and how worker stdout and stderr are drained is not yet specified (R18).
 
@@ -647,13 +647,13 @@ Single file (shim embedded) or a bundle directory (binary plus `lib/`). The size
 |---|---|---|---|
 | D1 | Revolt + Fibers (Amp v3) in master and worker | Decided (O10) | Revolt 1.0.9 installs and runs here |
 | D2 | NDJSON over AF_UNIX for worker IPC | Decided | |
-| D3 | Rust shim `libniphy` with C ABI | Decided | |
+| D3 | Rust shim `libraphp` with C ABI | Decided | |
 | D4 | Hybrid GUI, reading (i); native chrome option (a), GNOME first | Decided | P0.4: winit window, portal dialogs, in-window menus, optional tray (7.7) |
 | D5 | Shim-owned UI thread, no C-to-PHP callbacks | Decided | Verified P0.1 for the windowed case (Wayland and X11); UI-thread panic policy is open (R14) |
-| D6 | Events: in-memory queue + `eventfd`, drained with `niphy_poll` | **Verified** | Appendix A |
+| D6 | Events: in-memory queue + `eventfd`, drained with `raphp_poll` | **Verified** | Appendix A |
 | D7 | Linux first | Decided | |
-| D8 | `nlm` replaces `niphy run` | Decided | |
-| D9 | Composer under `nlm` for PHP packages; constructor injection, no facades | Decided (O9) | |
+| D8 | `rlm` replaces the earlier `run` command idea (it was `niphy run`, then `nlm`) | Decided | |
+| D9 | Composer under `rlm` for PHP packages; constructor injection, no facades | Decided (O9) | |
 | D10 | Socket-pair inheritance as primary IPC channel | Decided (O1) | Verified P0.2; requires `socket_create_pair` with `SOCK_CLOEXEC` |
 | D11 | JSON for shim commands in the MVP | Proposed | Appendix A: ~40 µs per 200-command batch |
 | D12 | Accessibility later, widget ids and roles from day one | Decided | |
@@ -661,17 +661,18 @@ Single file (shim embedded) or a bundle directory (binary plus `lib/`). The size
 | D14 | No Node-style APIs, no promise chaining, no fluent cascading | Decided | |
 | D15 | MIT license, semantic versioning | Decided (O8) | |
 | D16 | Uncaught errors: master logs and shuts down non-zero; worker exits non-zero and is restarted | Decided (O12) | |
-| D17 | Middleware: Amp-native for HTTP, one PSR-15-shaped contract for niphy RPC, PSR-15 bridge only if needed | Decided (O13) | |
+| D17 | Middleware: Amp-native for HTTP, one PSR-15-shaped contract for Raphp RPC, PSR-15 bridge only if needed | Decided (O13) | |
 | D18 | Workers are spawned with raw `proc_open` and an array command, never `amphp/process` | Source-checked (F18) | Source read in `amphp/process`, no code run. The array command is used in spikes P0.2, P0.3 and P0.6 (5.1) |
 | D19 | Self re-exec uses `readlink('/proc/self/exe')`; `PHP_BINARY` is empty in micro | Verified | P0.6 (10.2) |
 | D20 | Use the instance form `$ffi->new()`; `ffi.enable=preload` already permits FFI in CLI and micro | Verified | F11, F12 (10.2) |
 | D21 | Build the Rust shim against an old glibc (for example `cargo-zigbuild` with a `.2.17` target, or an old-distro container) so the shim does not raise the distributable floor | Proposed, needs user approval | F14, R23 (7.9) |
-| D22 | `niphy` is the **code name**. The public name is **Raphp** (D27). Renaming the code must stay cheap and is scheduled separately. Nothing is published under the code name. | Decided | The code name appears in the `Niphy\` namespace, `libniphy`, `niphy.json`, `NIPHY_*` variables, the C symbol prefix, and the acronym `nlm` (niphy libs manager) |
+| D22 | `niphy` **was** the code name, until the rename on 2026-11-06 (D28). The public name is **Raphp** (D27). Nothing was ever published under the code name. | Decided | History: the code name appeared in the `Niphy\` namespace, `libniphy`, `niphy.json`, `NIPHY_*` variables, the C symbol prefix, and the acronym `nlm` (niphy libs manager) |
 | D23 | **PHP floor: 8.5 or newer** (`php >= 8.5`). CI runs on PHP 8.5 for now, and newer versions are added as they ship. PHPUnit 13 (needs PHP 8.5.12 or newer) is therefore usable, and the floor equals the managed PHP build. | Decided (P1.1) | You confirmed "8.5+". PHP 8.3 active support ended 31 Dec 2025, 8.4 ends 31 Dec 2026, 8.5 ends 31 Dec 2027 (php.net, 2026-11-06) |
 | D24 | **Container: PHP-DI 7.** The core depends only on `psr/container`. | Decided (P1.1) | PHP-DI 7.1.1 requires PHP 8.0 or newer. Autowiring fits constructor injection (O9) |
 | D25 | **Formatter: PHP-CS-Fixer** with the `@PER-CS3.0` rule set, pinned so a tool update cannot silently change the rules. | Decided (P1.1) | The rule sets `@PER-CS`, `@PER-CS1.0` and `@PER-CS3.0` exist in PHP-CS-Fixer 3.95.28. The `@PER-CS3.0` name is confirmed there; the exact pin is checked in P1.3 |
-| D26 | **Copyright holder: Codizium.** The MIT `LICENSE` reads "Copyright (c) 2026 Codizium". | Decided (P1.1) | The composer vendor name stays a placeholder (`niphy/niphy`), per D22 |
-| D27 | **Public name: Raphp** (Ralph PHP, pronounced "raf-pee"). `niphy` stays the code name until a rename is scheduled (D22). | Decided | Chosen by you. On 2026-11-06 `raphp` is free on crates.io, npm and Packagist; a GitHub handle `raphp` already exists. The acronym `nlm` (niphy libs manager) needs a decision when the rename happens |
+| D26 | **Copyright holder: Codizium.** The MIT `LICENSE` reads "Copyright (c) 2026 Codizium". | Decided (P1.1) | The composer vendor name stays a placeholder (`raphp/raphp`), per D28 |
+| D27 | **Public name: Raphp** (Ralph PHP, pronounced "raf-pee"). `niphy` was the code name until the rename (D22, D28). | Decided | Chosen by you. On 2026-11-06 `raphp` is free on crates.io, npm and Packagist; a GitHub user named `raphp` already exists and is not yours (your account is `ralphxp`, the repository is `ralphxp/raphp`; Composer vendor names are independent of GitHub handles). The acronym for the CLI was decided with the rename: `rlm` (Raphp libs manager), D28 |
+| D28 | **Rename done:** code name `niphy` becomes Raphp. Namespace `Raphp\`, `libraphp`, `raphp.json`, `RAPHP_*` variables, C prefix `raphp_`, CLI `nlm` becomes `rlm` (Raphp libs manager), directory `nlm/` becomes `rlm/`, Composer placeholder `raphp/raphp`. Spike code under `spikes/` keeps the old names. | Decided | Owner accepted the lead's recommendation for the rename and for `rlm`. Date: 2026-11-06 |
 
 The questions table in section 17 is the record for O2, O3, O4, O5 and O7; they have no separate D rows.
 
@@ -693,15 +694,15 @@ The questions table in section 17 is the record for O2, O3, O4, O5 and O7; they 
 | R10 | "All tiers" scope creep | High / High | Tiered milestones, review gate per phase | Proposed |
 | R11 | Amp API churn or version drift | Low / Medium | Pin versions, interface layer over Amp | Proposed |
 | R12 | A CPU-bound worker misses heartbeats and is wrongly killed | Medium / Medium | Offload CPU work; tunable threshold | Proposed |
-| R13 | Distributing a Rust `.so` complicates installs | Medium / Medium | `nlm` fetch + checksum, embedded fallback | Proposed |
+| R13 | Distributing a Rust `.so` complicates installs | Medium / Medium | `rlm` fetch + checksum, embedded fallback | Proposed |
 | R14 | A panic or exit on the shim's own UI thread is not covered by the panic rule (7.3), and the shim has no place in the shutdown order (5.5). With `panic = "abort"` the whole master and, via PDEATHSIG, every worker could die (G2); with unwind and no catch, only the window would vanish silently | Not assessed / Not assessed | None yet. Phase 3 must define the build setting, the UI-thread policy, the master's reaction and the shutdown order | **Open** |
 | R15 | No ordering contract between the command queue and the event queue: stale events for removed widgets, unlinked command errors, re-render overwriting typed text (7.4, 8.3) | Not assessed / Not assessed | None yet. Plan step P3.3 (Phase 3) must define a written ordering contract. P4.2, P4.3 and P4.6 test against it | **Open** |
-| R16 | An event larger than the `niphy_poll` buffer can stall all UI input if the drain loop leaves on `-1` (7.3) | Not assessed / Not assessed | None yet. Must be resolved, with a test, before the ABI is frozen (Phase 3) | **Open** |
-| R17 | `proc_open` forks while a live multi-threaded shim exists in the master, which also holds descriptors niphy did not create (display, D-Bus, portals). Never tested | Not assessed / Not assessed | None yet. Needs evidence with a real window (Phase 3) before a rule is written | **Open** |
+| R16 | An event larger than the `raphp_poll` buffer can stall all UI input if the drain loop leaves on `-1` (7.3) | Not assessed / Not assessed | None yet. Must be resolved, with a test, before the ABI is frozen (Phase 3) | **Open** |
+| R17 | `proc_open` forks while a live multi-threaded shim exists in the master, which also holds descriptors Raphp did not create (display, D-Bus, portals). Never tested | Not assessed / Not assessed | None yet. Needs evidence with a real window (Phase 3) before a rule is written | **Open** |
 | R18 | No rule for reaping workers (exit status, non-blocking collection) or for draining their stdout and stderr (5.1, 5.3, 14) | Not assessed / Not assessed | None yet. Phase 2 must define it before the supervisor | **Open** |
 | R19 | `ping`, `pong` and `cancel` can be starved behind a very large message on the single ordered stream, and the receiver's behavior at the size cap is unspecified (6.3, 6.8) | Not assessed / Not assessed | None yet. Phase 2 must define it and measure ping latency during a large transfer | **Open** |
 | R20 | The master cannot be recycled yet holds the most long-lived state (all view code, 8.4); R9's mitigation does not cover it | Not assessed / Not assessed | None yet. Needs a master memory budget and monitoring plan (Phases 2 and 4) | **Open** |
-| R21 | Hot reload (5.7) covers worker code only, while most edits land in master code; reload versus crash accounting is undefined | Not assessed / Not assessed | None yet. Phase 5 (`nlm dev`) must define it | **Open** |
+| R21 | Hot reload (5.7) covers worker code only, while most edits land in master code; reload versus crash accounting is undefined | Not assessed / Not assessed | None yet. Phase 5 (`rlm dev`) must define it | **Open** |
 | R22 | `SO_PEERCRED` is not exposed by PHP's sockets extension here, so the secondary path-socket authentication is unspecified (6.2, 6.10) | Not assessed / Not assessed | The secondary path is not needed for the MVP, and the socket-pair primary has no path to attack | **Open** |
 | R23 | The shim's glibc floor (2.34 headless, 2.43 windowed) is higher than PHP's (2.17), so the shim sets the distributable floor | Not assessed / Not assessed | D21: build the shim against an old glibc. Not yet run on any other distro | **Open** (D21 Proposed) |
 
@@ -717,7 +718,7 @@ The design gaps found in the audit are not numbered questions. They are recorded
 |---|---|---|---|
 | O1 | IPC connection mechanism | Socket pair inherited by the child is primary, created with `socket_create_pair` and `SOCK_CLOEXEC` (verified, P0.2). Path sockets with 0700/0600 modes and a token are secondary (6.2). A `SO_PEERCRED` check is an optional add-on and is open (R22). | **Accepted** |
 | O2 | Where view and handlers run | In the master. Workers hold logic and data (8.4). | **Accepted** |
-| O3 | PHP provisioning | `nlm` manages a PHP build by default, with system PHP as an opt-out (9.4). A static-php-cli build was verified in P0.5. | **Accepted** |
+| O3 | PHP provisioning | `rlm` manages a PHP build by default, with system PHP as an opt-out (9.4). A static-php-cli build was verified in P0.5. | **Accepted** |
 | O4 | Headless shim backend and virtual compositor for CI | Yes (7.8, 13). | **Accepted** |
 | O5 | Minimum glibc | Deferred to Phase 6, to be chosen from a test build. Two inputs set the floor: the `SPC_TARGET` suffix for PHP and the glibc the shim is built against (11, R23, D21). | **Accepted (deferred)** |
 | O7 | Event queue overflow policy | Coalesce harder, then back-pressure, never drop discrete events (7.5). | **Accepted** |
@@ -726,7 +727,7 @@ The design gaps found in the audit are not numbered questions. They are recorded
 | O10 | Amp v3 Fiber style, no promise chaining | Yes (4.3, 4.7). | **Accepted** |
 | O11 | PER-CS, PHPStan strict, PHPUnit, and PHP-CS-Fixer or PHP_CodeSniffer | Yes. The formatter is PHP-CS-Fixer (D25). Exact tool versions and the PHPStan configuration are fixed in P1.3. | **Accepted** |
 | O12 | Uncaught error policy | Master: log, graceful shutdown, non-zero exit. Worker: exit non-zero so the supervisor restarts it (4.7). | **Accepted** |
-| O13 | Middleware: Amp-native for HTTP, one niphy PSR-15-shaped contract for RPC, PSR-15 bridge only if needed | Yes (4.8). | **Accepted** |
+| O13 | Middleware: Amp-native for HTTP, one Raphp PSR-15-shaped contract for RPC, PSR-15 bridge only if needed | Yes (4.8). | **Accepted** |
 
 ---
 
@@ -742,7 +743,7 @@ The design gaps found in the audit are not numbered questions. They are recorded
 | Batch burst, PHP reading concurrently (1000 / 5000 / 20000 events) | **0 lost** | Races with the reader, so it proves little by itself. |
 | 20,000 events while PHP is **blocked 300 ms** | Pipe-as-buffer design: **2,416 received, 17,584 dropped (88%)**. Queue + eventfd design: **20,000 received, 0 lost**, peak queue 540,000 bytes | The deciding result for D6. |
 | Pure FFI call cost (`abs()`, no syscall) | **~124–242 ns/call** (two runs) | An earlier ~1.2 µs figure was `getpid`, a real syscall, and was mislabeled. |
-| `niphy_send("[]")` | ~1.2–1.8 µs/call | Includes allocation, channel send and waking the UI thread. |
+| `niphy_send("[]")` (spike code, predates the rename) | ~1.2–1.8 µs/call | Includes allocation, channel send and waking the UI thread. |
 | `json_encode` of a 200-command batch | ~36–71 µs (all reruns; see `SPIKE_REPORT.md` section 3) | Supports D11 (JSON is fine at first). |
 | UI-thread-originated events waking Revolt (20 ms ticks, 1 s) | 49–50 ticks, mean gap 20.0 ms, max 20.2–21.7 ms | PHP's own timer kept firing normally alongside. |
 | Shim ready after init | 0.55–0.84 ms | |
@@ -758,7 +759,7 @@ User clicks "Scan":
 
 1. Compositor delivers the click to the shim's UI thread (winit).
 2. The shim queues `{"ev":"widget.click","id":12}` and writes the eventfd.
-3. The master's Revolt loop wakes, clears the eventfd, drains `niphy_poll`.
+3. The master's Revolt loop wakes, clears the eventfd, drains `raphp_poll`.
 4. The UI layer finds widget 12's handler and runs it in a Fiber: `busy = true`.
 5. State change triggers re-render and diff. One command batch (`widget.set` for the progress bar) goes to the shim in one FFI call.
 6. The handler calls `worker->call('files.scan', ...)`: a `req` envelope goes over the worker's socket.

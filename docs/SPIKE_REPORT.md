@@ -160,7 +160,7 @@ The shim `.so` stored inside the phar was read, written to `memfd_create`, and l
 
 | ID | Finding | Source |
 |---|---|---|
-| F1 | Socket pairs must use `SOCK_CLOEXEC`. `ext-sockets` is a hard requirement. Every niphy descriptor must be close-on-exec. | P0.2 |
+| F1 | Socket pairs must use `SOCK_CLOEXEC`. `ext-sockets` is a hard requirement. Every Raphp descriptor must be close-on-exec. | P0.2 |
 | F2 | `proc_open` must get an array command. | P0.3 (derived) |
 | F3 | The worker's SIGTERM handling must terminate it. | P0.3 |
 | F4 | The parent leaks its script fd into children (harmless for EOF). | P0.2 |
@@ -177,7 +177,7 @@ The shim `.so` stored inside the phar was read, written to `memfd_create`, and l
 | F15 | `spc micro:combine -I` bakes ini. Sizes: micro 18.9 MB, php 21 MB, app 19.5 MB. | P0.5 |
 | F16 | Shim loads from inside the phar via `memfd_create` plus `dlopen` (headless shim). | P0.7 |
 | F17 | Zig 0.17.1 and `pkg-config` are installed locally by `spc doctor`. | P0.5 |
-| F18 | `amphp/process` wraps commands in `/bin/sh` with a signal trap and uses fd 3 itself, so it cannot spawn niphy workers. Verified by reading its source. | audit + source check |
+| F18 | `amphp/process` wraps commands in `/bin/sh` with a signal trap and uses fd 3 itself, so it cannot spawn Raphp workers. Verified by reading its source. | audit + source check |
 | F19 | The project directory is on a root-owned 777 mount. Git warns "dubious ownership" there, and so does Composer when it probes git for the project version. Composer itself works on the mount (checked in P1.2: executables are installed as regular proxy files and run). | P0.5, P1.2 |
 
 ## 5. What was not tested

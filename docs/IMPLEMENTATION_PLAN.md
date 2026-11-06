@@ -1,4 +1,4 @@
-# Niphy Implementation Plan
+# Raphp Implementation Plan
 
 **Status:** Draft v0.2 for review, 2026-11-06. Revised after the Phase 0 audit: the spike results P0.0 to P0.7 and findings F1 to F19 are folded into the steps below. Anything marked *(added after the Phase 0 audit)* is new since v0.1.
 **Source of truth for design:** `FRAMEWORK.md` (current version in its own status line). This plan says *in what order* and *how we know each step is done*. It does not redesign anything. If a step reveals that the framework doc is wrong, we fix the doc first, then continue.
@@ -33,7 +33,7 @@ These come from Phase 0 findings. Each has a named step that tests it, and a lat
 
 | Invariant | Source | Tested in |
 |---|---|---|
-| Every file descriptor niphy creates is close-on-exec. Worker channels are created only through the P2.9 channel factory (`socket_create_pair` with `SOCK_CLOEXEC` plus `socket_export_stream`), never `stream_socket_pair`. `ext-sockets` is a hard requirement. | F1 | P2.9, P1.3 (forbidden-calls rule) |
+| Every file descriptor Raphp creates is close-on-exec. Worker channels are created only through the P2.9 channel factory (`socket_create_pair` with `SOCK_CLOEXEC` plus `socket_export_stream`), never `stream_socket_pair`. `ext-sockets` is a hard requirement. | F1 | P2.9, P1.3 (forbidden-calls rule) |
 | Workers are spawned with raw `proc_open` and an ARRAY command, never a string and never `amphp/process` (source-checked: its source was read, not run in a spike). The "never a string" part is derived from how `PDEATHSIG` works (a string command makes `/bin/sh` the parent), not separately tested in Phase 0. P2.9 check 4 is its first test. | F2, F18, D18 | P2.9 |
 | Revolt watchers are cancelled before the stream they watch is closed. | F5 | P2.5 |
 | PHP code uses the instance form `$ffi->new(...)`, and tests run with `error_reporting = E_ALL` and fail on deprecations. | F11, D20 | P1.3, P3.5 |
@@ -53,9 +53,9 @@ These come from Phase 0 findings. Each has a named step that tests it, and a lat
 | **1** | Repository foundation | Clean repo, tooling, `make check`, composition root | Checkpoint 1 |
 | **2** | Runtime core and IPC | Headless master/worker apps with RPC, cancel, supervision | Checkpoint 2 |
 | **2B** | Tier 1 standard library | Filesystem, process, streams, signals services | Checkpoint 2B |
-| **3** | `libniphy` shim MVP | A native window driven from PHP over FFI | Checkpoint 3 |
+| **3** | `libraphp` shim MVP | A native window driven from PHP over FFI | Checkpoint 3 |
 | **4** | UI framework | `hello-gui` example, responsive UI over a worker | Checkpoint 4 |
-| **5** | `nlm` | `init`, `doctor`, `add`, `install`, `run`, `dev` | Checkpoint 5 |
+| **5** | `rlm` | `init`, `doctor`, `add`, `install`, `run`, `dev` | Checkpoint 5 |
 | **6** | Standalone packaging | `hello-gui` as a single binary | Checkpoint 6 |
 | **7** | Runtime tier 2 | Sockets, HTTP client and server, WebSocket | Checkpoint 7 |
 | **8** | Tier 3 and hardening | TLS, crypto, zlib, DNS, security review, v0.1 release | Checkpoint 8 |
@@ -99,13 +99,13 @@ These are gaps in the design, found by the Phase 0 audit. They are **Open**. Thi
 | P0.4 | Nothing now. `sudo dnf install gtk4-devel` is needed only if the GTK4 fallback (b) is ever pursued. Option (a) was chosen. | Not installed on this machine |
 | P0.5 | Done. Permission was given. `spc doctor --no-interaction` attempts `sudo` installs on its own, so ask before re-running it. | Rule 6 |
 | Checkpoint 0 | Approval of D21 (build the shim against an old glibc, **Proposed**) | Decides how P3.1 and P6.1 build the shim |
-| P1.1 | *Answered 2026-11-06:* PHP floor, container, formatter, copyright holder (D23 to D26). Still open: the Composer vendor name, which stays a placeholder (`niphy/niphy`) because the framework name is a code name (D22), and the exact tool versions (fixed in P1.3) | Binding for the whole project |
+| P1.1 | *Answered 2026-11-06:* PHP floor, container, formatter, copyright holder (D23 to D26). Still open: the Composer vendor name, which stays a placeholder (`raphp/raphp`; the name was a code name when this was decided, D22, and the rename is D28), and the exact tool versions (fixed in P1.3) | Binding for the whole project |
 | P6.1 | Permission before the first `spc` run. It downloads sources and installs Zig 0.17.1 and `pkg-config` into its own work directory. `spc doctor --no-interaction` may attempt `sudo` installs on its own. The P0.5 build took well over 30 minutes of compute. | Rule 6 |
 | P6.7 | Permission before pulling container images (`podman`, including an old-glibc image) | A download of unknown size, so working-agreement rule 6 applies |
 | P1.2 | Copyright holder name for the MIT `LICENSE`, and whether to `git init`. The project folder is on a root-owned mount with 777 permissions, where git reports "dubious ownership", so a `safe.directory` entry may be needed (F19). | Not in the conversation yet |
 | P1.4 | Git hosting (GitHub, GitLab, other) | Decides the CI file format |
 | P3.12c | You enable the GNOME AppIndicator extension (installed, currently disabled) | The tray can only be tested with it enabled |
-| P5.5 | Where prebuilt `libniphy` binaries will be published | Decides the native lib fetch source |
+| P5.5 | Where prebuilt `libraphp` binaries will be published | Decides the native lib fetch source |
 
 ---
 
@@ -130,7 +130,7 @@ Code: `shim-win/`, `spike01b.php`.
 
 ### P0.2 Socket-pair inheritance via `proc_open` (O1). Size S. **Done, with a condition**
 - **Do:** parent creates `socket_create_pair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, $pair)` and exports each end with `socket_export_stream`. It passes one end as a numbered descriptor in `proc_open`'s descriptor spec (the command must be an ARRAY, not a string; this is derived from how `PDEATHSIG` works, because a string command makes `/bin/sh` the parent, and was not separately tested in Phase 0), closes its own copy of the child's end after spawning, and the child reads `php://fd/3`. Both sides under Revolt. `stream_socket_pair` is not usable here: it leaks the parent's end (and other fds) into the child, so the child never sees EOF.
-- **Done when:** NDJSON flows both ways without blocking the loop; child sees EOF when the parent closes; parent sees EOF when the child exits; writes larger than the socket buffer back-pressure correctly; the child still sees EOF while the parent's own end is open elsewhere in the parent (shows the parent's end is not inherited; the rule for every niphy fd is derived from this and tested in P2.9).
+- **Done when:** NDJSON flows both ways without blocking the loop; child sees EOF when the parent closes; parent sees EOF when the child exits; writes larger than the socket buffer back-pressure correctly; the child still sees EOF while the parent's own end is open elsewhere in the parent (shows the parent's end is not inherited; the rule for every Raphp fd is derived from this and tested in P2.9).
 - **Fallback if it fails:** path socket plus token (FRAMEWORK 6.2 secondary).
 - **Result:** passes, with a mandatory condition: `SOCK_CLOEXEC`, which makes `ext-sockets` a hard requirement. 2000 round trips p50 about 106 to 265 us. A 16 MiB write to a stalled child back-pressured correctly: the loop kept ticking (max gap about 19 ms) and all 16,777,217 bytes arrived. Tested with ONE worker only, so the two-worker case is a P2.9 check.
 
@@ -181,15 +181,15 @@ Already decided, not reopened here (D13): PER-CS, PSRs, strict types, PHPStan st
 - **Container: PHP-DI 7** (D24). The core depends only on `psr/container`.
 - **Formatter: PHP-CS-Fixer** with the `@PER-CS3.0` rule set (D25), pinned so a tool update cannot change the rules.
 - **Copyright holder: Codizium** (D26).
-- **Composer vendor and package name:** the framework name is a code name (D22), so the placeholder `niphy/niphy` is used and nothing is published under it.
+- **Composer vendor and package name:** the framework name was then a code name (D22), so a placeholder was used, now `raphp/raphp` (D28), and nothing is published under it.
 
 **Still to do in this step:** the exact versions of PHPUnit, PHP-CS-Fixer and PHPStan, and the strictest PHPStan configuration that passes cleanly on an empty project (never lowered afterwards). They are fixed in P1.3, when the tools are installed.
 **Done when:** the decisions are recorded in the `FRAMEWORK.md` decision log. *(Done 2026-11-06, D23 to D26. The tool versions close in P1.3.)*
 
 ### P1.2 Repository scaffold. Size S
 - `LICENSE` (MIT, with your copyright holder name), `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `.gitignore`, `.editorconfig`.
-- `composer.json` with PSR-4 `Niphy\` → `php/src/`, dev autoload for tests, scripts. The required extensions from FRAMEWORK 10 are declared, with `ext-sockets` as a hard requirement (F1).
-- Directory layout from FRAMEWORK/plan: `php/`, `shim/`, `nlm/`, `examples/`, `docs/`, `spikes/`.
+- `composer.json` with PSR-4 `Raphp\` → `php/src/`, dev autoload for tests, scripts. The required extensions from FRAMEWORK 10 are declared, with `ext-sockets` as a hard requirement (F1).
+- Directory layout from FRAMEWORK/plan: `php/`, `shim/`, `rlm/`, `examples/`, `docs/`, `spikes/`.
 - `git init` was done by you. The project mount is root-owned with 777 permissions and git reports "dubious ownership" there (F19). Git ignores `safe.directory` in a repository's own config, so the fix is a global entry (you already have one for your other projects on this mount) or `git -c safe.directory=...` per command.
 **Done when:** `composer validate` passes and a clean checkout installs. Composer's symlink and permission behavior on this mount is untested, so the install is checked here.
 **Result (2026-11-06):** passes. `composer validate --strict` reports the file valid; `composer check-platform-reqs` passes for PHP 8.5.12 and `ffi`, `json`, `pcntl`, `posix`, `sockets`; a clean install works; and a package with an executable (`phpstan`) installs on this mount as a regular proxy file and runs. Composer prints a "dubious ownership" warning and defaults the root version because it probes git, which needs the global `safe.directory` entry (or `COMPOSER_ROOT_VERSION`). Nothing is committed yet.
@@ -211,14 +211,15 @@ Already decided, not reopened here (D13): PER-CS, PSRs, strict types, PHPStan st
 ### P1.4 Continuous integration. Size S
 Depends on your hosting answer. Runs `make check` on PHP 8.5 (the floor, D23), plus stable Rust, with `ffi`, `pcntl`, `posix` and `sockets` enabled.
 **Done when:** the pipeline file exists and (if hosting is set up) is green.
+**Result (2026-11-06):** the pipeline file is written, **not yet proven green**. GitHub is the host (`github.com/ralphxp/raphp`), so it is `.github/workflows/ci.yml`: one job that runs `make check` on PHP 8.5 with `ffi`, `pcntl`, `posix` and `sockets`, plus stable Rust with rustfmt and clippy, on pushes to `master` and on pull requests. Actions used: `actions/checkout@v7`, `shivammathur/setup-php@v2`, `dtolnay/rust-toolchain@stable`, all pinned by tag, not by commit hash. The YAML parses. It has never run: it needs a push, after which the result is read with `gh run list`. The Rust steps are skipped by `make check` until P3.1, so the Rust toolchain setup is unused for now.
 
 ### P1.5 Composition root skeleton. Size M
-- PSR-11 container bootstrapping, typed `Config` loaded from `niphy.json` plus environment, PSR-3 logger (Monolog), PSR-20 clock.
+- PSR-11 container bootstrapping, typed `Config` loaded from `raphp.json` plus environment, PSR-3 logger (Monolog), PSR-20 clock.
 - No global helpers, no static facades.
 **Done when:** unit tests cover config loading (valid, invalid, env override) and container wiring.
 
 ### P1.6 Error model. Size S
-- `Niphy\Error\*` exception hierarchy and an `ErrorCode` enum matching FRAMEWORK 6.6.
+- `Raphp\Error\*` exception hierarchy and an `ErrorCode` enum matching FRAMEWORK 6.6.
 **Done when:** tests prove every code round-trips to and from its string form.
 
 **Checkpoint 1:** `make check` is green on a clean clone. You review structure and tooling.
@@ -265,7 +266,7 @@ Depends on your hosting answer. Runs `make check` on PHP 8.5 (the floor, D23), p
 **Done when:** tests prove discovery, duplicate-name detection, and that only `#[Idempotent]` methods are eligible for automatic retry.
 
 ### P2.9 Process spawner. Size M
-- **Channel factory:** `socket_create_pair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, $raw)` plus `socket_export_stream` on both ends, so every descriptor niphy creates is close-on-exec (F1, P0.2). It fails with a clear typed error if `ext-sockets` or `SOCK_CLOEXEC` is missing. The parent closes its copy of the child's end right after `proc_open`.
+- **Channel factory:** `socket_create_pair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, $raw)` plus `socket_export_stream` on both ends, so every descriptor Raphp creates is close-on-exec (F1, P0.2). It fails with a clear typed error if `ext-sockets` or `SOCK_CLOEXEC` is missing. The parent closes its copy of the child's end right after `proc_open`.
 - **Spawn:** raw `proc_open` with an ARRAY command, never a string (F2), so the master is the child's parent and not `/bin/sh`. Never `amphp/process` (F18, D18): it wraps every command in a `/bin/sh` script and uses fd 3 for its own pid pipe (source read, not run in a spike). The self re-exec path comes from `readlink('/proc/self/exe')` (D19). Role flags, stdout/stderr capture, `WorkerHandle`.
 - **Orphan protection (per P0.3):** in the child, right after start, `prctl(PR_SET_PDEATHSIG, SIGTERM)` through libc FFI, then apply the spike's guard: compare `posix_getppid()` with the expected parent pid (the spike passed it as an argument) and exit if it differs. The exact argument convention is decided in this step and reconciled with the worker command line in FRAMEWORK 5.1 (path, `--role=worker`, `--name=<worker>`) and 5.6. The worker's SIGTERM handler must really terminate the process. **[Proposed]** The `prctl` wrapper lives in a separate runtime-side libc FFI namespace, chosen in this step, that does not depend on the UI package, so headless mode does not load the UI package.
 - Add the allow-list entries to the P1.3 forbidden-calls rule (the spawner may call `proc_open`).
@@ -285,7 +286,7 @@ Depends on your hosting answer. Runs `make check` on PHP 8.5 (the floor, D23), p
 
 ### P2.11 Worker runtime entry. Size S
 - The `--role=worker` bootstrap: container, handler loading, loop, exit on EOF.
-**Done when:** a worker exits promptly when the master dies, even without `prctl`: EOF-only, verified with two workers running (see P2.9 check 2). This relies on every niphy descriptor being close-on-exec.
+**Done when:** a worker exits promptly when the master dies, even without `prctl`: EOF-only, verified with two workers running (see P2.9 check 2). This relies on every Raphp descriptor being close-on-exec.
 
 ### P2.12 Headless example. Size S
 - `examples/headless-worker`: a CLI app calling a worker with progress and cancellation (Ctrl-C cancels).
@@ -305,11 +306,11 @@ Depends on your hosting answer. Runs `make check` on PHP 8.5 (the floor, D23), p
 **Goal:** the PHP-idiomatic services that application code uses instead of blocking built-ins.
 
 ### P2B.1 Filesystem service. Size M
-`Niphy\Filesystem` interface and Amp-backed implementation: read, write, stat, directory listing, watch (if supported), all taking `?Cancellation`.
+`Raphp\Filesystem` interface and Amp-backed implementation: read, write, stat, directory listing, watch (if supported), all taking `?Cancellation`.
 **Done when:** tests pass, and a "blocking call detector" test shows the loop keeps ticking during large reads.
 
 ### P2B.2 Process runner. Size S
-`Niphy\Process\ProcessRunner` over `amphp/process`: run a command, capture output, stream output, cancel. This is for application commands only. Niphy workers are never spawned through `amphp/process` (P2.9, D18).
+`Raphp\Process\ProcessRunner` over `amphp/process`: run a command, capture output, stream output, cancel. This is for application commands only. Raphp workers are never spawned through `amphp/process` (P2.9, D18).
 
 ### P2B.3 Streams helpers. Size S
 Line reading, piping, progress streams over `amphp/pipeline` and byte streams.
@@ -317,20 +318,20 @@ Line reading, piping, progress streams over `amphp/pipeline` and byte streams.
 ### P2B.4 Optional accelerators. Size S
 Detect `ext-uv` and `ext-eio` and select drivers automatically. Everything must work without them.
 
-### P2B.5 `nlm doctor` checks for blocking calls (documentation only). Size S
-A doc section listing blocking PHP functions and their niphy replacements.
+### P2B.5 `rlm doctor` checks for blocking calls (documentation only). Size S
+A doc section listing blocking PHP functions and their Raphp replacements.
 
 **Checkpoint 2B:** tests green, short demo reading a large file while a timer keeps ticking.
 
 ---
 
-## 7. Phase 3: `libniphy` shim MVP (Rust)
+## 7. Phase 3: `libraphp` shim MVP (Rust)
 
 **Goal:** a native window and widgets driven from PHP over FFI, with no C-to-PHP callbacks.
 **Gate:** P0.1 (R1) passed, and P0.4 (R2) decided (option (a), GNOME first). Open gaps R14 to R17 are resolved in the steps named in section 1.
 
 ### P3.1 Shim workspace and ABI. Size M
-- `shim/` Cargo workspace, `cbindgen` configuration, committed header, `niphy_abi_version`, `niphy_last_error`, `catch_unwind` wrapper for every `extern "C"` function.
+- `shim/` Cargo workspace, `cbindgen` configuration, committed header, `raphp_abi_version`, `raphp_last_error`, `catch_unwind` wrapper for every `extern "C"` function.
 - A `make` target that reports the highest `GLIBC_x.y` the built shim requires (`objdump -T`), and records it. *(added after the Phase 0 audit, R23)* Building the shim against an old glibc is D21 (**Proposed**, needs your approval). Until it is approved the report is informational, and the P0.5 figures (2.34 headless, 2.43 windowed) stand.
 **Done when:** `make header` produces no diff; a Rust test proves a panic inside a command becomes an error and leaves the shim usable or cleanly poisoned; the shim's glibc requirement is printed by the `make` target.
 **Open gap to close here: R14.** A panic or exit on the shim's own UI thread is not covered by the rule above. This step's acceptance must include a written contract for what happens in that case, and a test. The place of the shim's exit in the master's shutdown order is checked again at P4.5. *(added after the Phase 0 audit)*
@@ -352,7 +353,7 @@ A doc section listing blocking PHP functions and their niphy replacements.
 **Done when:** the PHP integration tests in P3.5 run in an environment with no display.
 
 ### P3.5 PHP FFI binding. Size M
-- `Niphy\Ui\Ffi\Loader` (header loading, ABI check, clear diagnostics when `ffi.enable` is wrong), `Shim` class (send batch, watch eventfd under Revolt, drain events). Use the instance form `$ffi->new(...)`, never the static `FFI::new()` (deprecated in PHP 8.5, D20). `ffi.enable=preload`, the default, already permits `FFI::cdef` in CLI and micro, so the loader does not require a changed ini.
+- `Raphp\Ui\Ffi\Loader` (header loading, ABI check, clear diagnostics when `ffi.enable` is wrong), `Shim` class (send batch, watch eventfd under Revolt, drain events). Use the instance form `$ffi->new(...)`, never the static `FFI::new()` (deprecated in PHP 8.5, D20). `ffi.enable=preload`, the default, already permits `FFI::cdef` in CLI and micro, so the loader does not require a changed ini.
 **Done when:** PHP integration tests drive the headless shim and receive events; the "wrong ABI version" and "FFI disabled" errors are clear; the tests run with `error_reporting = E_ALL` and raise no deprecation.
 **Open gap to close here: R17.** `proc_open` forks while a live multi-threaded shim exists in the master, which no spike has tested. This step is the first where PHP drives a live shim, so its acceptance must include a test that spawns a worker while the shim is running (headless first, repeated with a real window in P3.6), a written contract for what the worker may inherit, and a check of the worker's descriptor list. *(added after the Phase 0 audit)*
 
@@ -451,27 +452,27 @@ The file-scanner screen from FRAMEWORK 8.2.
 
 ---
 
-## 9. Phase 5: `nlm`
+## 9. Phase 5: `rlm`
 
 **Goal:** one CLI for project setup, dependencies, running, and (later) building.
 
 ### P5.1 CLI skeleton. Size M
-Symfony Console, project discovery (`niphy.json`), consistent output and exit codes.
+Symfony Console, project discovery (`raphp.json`), consistent output and exit codes.
 
-### P5.2 `nlm init`. Size S
+### P5.2 `rlm init`. Size S
 Templates for a headless app and a GUI app.
 
-### P5.3 `nlm doctor`. Size M
+### P5.3 `rlm doctor`. Size M
 Checks: `ffi` and `ffi.enable`, required extensions (including `ext-sockets`), shim presence and ABI, display session, glibc version (compared against the declared minimum, a configurable placeholder until P6.8 wires in the final value and re-runs this check), PHP version.
 **Done when:** each check has a failing and a passing test, and the messages say how to fix the problem.
 
-### P5.4 `nlm add|remove|install|update`. Size M
+### P5.4 `rlm add|remove|install|update`. Size M
 Wrap Composer (decide: invoke the `composer` binary versus embed `composer.phar`; recommend the binary first).
 
 ### P5.5 Native lib store and lock file. Size L
-`~/.local/share/nlm/libs/...`, `nlm.lock` with versions and sha256, `nlm lib list|pin|verify`. Source for downloads decided with you at this step.
+`~/.local/share/rlm/libs/...`, `rlm.lock` with versions and sha256, `rlm lib list|pin|verify`. Source for downloads decided with you at this step.
 
-### P5.6 `nlm run` and `nlm dev`. Size L
+### P5.6 `rlm run` and `rlm dev`. Size L
 Run an app or script; `dev` watches files and restarts workers. The file watcher may use Amp file watching, or polling if no inotify binding is available.
 **Done when:** editing a worker file restarts the worker while the window stays open.
 **Open gap to close here: R21.** Hot reload covers worker code only, while most edits land in master code (views and handlers run in the master). This step's acceptance must include a written statement of what survives a reload for each kind of edit, and a decision on how a reload restart is counted by the supervisor. Neither is designed yet. *(added after the Phase 0 audit)*
@@ -479,7 +480,7 @@ Run an app or script; `dev` watches files and restarts workers. The file watcher
 ### P5.7 Managed PHP provisioning (O3). Size M
 Interface now, full implementation after Phase 6 produces the builds.
 
-**Checkpoint 5:** `nlm init` → `nlm dev` → edit → hot reload demo.
+**Checkpoint 5:** `rlm init` → `rlm dev` → edit → hot reload demo.
 
 ---
 
@@ -506,7 +507,7 @@ Master and worker roles from the same executable, per P0.6. The executable path 
 `memfd_create` loading per P0.7, with a sidecar fallback and checksum verification.
 **Done when:** the windowed shim loads through `memfd` inside a micro binary and opens a window. P0.7 verified only the headless shim there. *(added after the Phase 0 audit)*
 
-### P6.6 `nlm build`. Size M
+### P6.6 `rlm build`. Size M
 End-to-end command and output layouts (single file or bundle directory).
 
 ### P6.7 Clean-container test. Size M
@@ -514,7 +515,7 @@ Run the built binary in a minimal image with `podman` (no PHP, no project files)
 **Done when:** `ldd` is clean of missing libraries; master and worker both start; the file-scan example completes. *(added after the Phase 0 audit:)* The test image is glibc-based (not Alpine or musl). The binary and the shim also run on the oldest-glibc image that is practical to obtain (which image is practical to obtain is decided here), and the image and its glibc version are recorded. `ldd` and `objdump -T` of the binary and the shim show no missing libraries and no symbol version above the target.
 
 ### P6.8 Support matrix and minimum glibc (O5, R23). Size S
-The declared minimum glibc is the higher of the PHP floor and the shim floor, based on the P6.7 results, and the images actually tested are stated. Documented in FRAMEWORK 11 and 7.9, and compared against the host glibc by `nlm doctor` (P5.3). *(corrected after the Phase 0 audit)*
+The declared minimum glibc is the higher of the PHP floor and the shim floor, based on the P6.7 results, and the images actually tested are stated. Documented in FRAMEWORK 11 and 7.9, and compared against the host glibc by `rlm doctor` (P5.3). *(corrected after the Phase 0 audit)*
 
 **Checkpoint 6:** you run the single binary yourself.
 
@@ -535,7 +536,7 @@ The declared minimum glibc is the higher of the PHP floor and the shim floor, ba
 - **P8.1** TLS, crypto, zlib, DNS, os/path/url utilities.
 - **P8.2** Permissions model design.
 - **P8.3** Shared-memory lane for large payloads.
-- **P8.4** Security review of IPC, FFI surface and `nlm` downloads. Includes the secondary path-socket authentication, where `SO_PEERCRED` is not exposed by PHP's sockets extension here (R22, open).
+- **P8.4** Security review of IPC, FFI surface and `rlm` downloads. Includes the secondary path-socket authentication, where `SO_PEERCRED` is not exposed by PHP's sockets extension here (R22, open).
 - **P8.5** Documentation set and API reference.
 - **P8.6** Release process (semantic versioning, changelog, checksums), first tagged release.
 - **P8.7** Accessibility design (AccessKit) and Windows/macOS design notes (documents, not code).
@@ -550,7 +551,7 @@ The declared minimum glibc is the higher of the PHP floor and the shim floor, ba
 - Worker sandboxing (Landlock/seccomp).
 - Auto-update for built apps.
 - ReactPHP promise interop.
-- A niphy package registry.
+- A Raphp package registry.
 
 ---
 
