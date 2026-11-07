@@ -4,15 +4,17 @@
  * Worker fixture for the process tests. It is started by the real spawner, with the standard
  * command line (--role=worker --name=<name> --parent-pid=<pid>) and the channel on descriptor 3.
  *
- * Test-only flags: --marker=<file> (leave that file behind when SIGTERM arrives), --no-pdeathsig (do not ask the kernel for a signal when the master dies) and
+ * Test-only flags: --fail-start (exit at once), --hang-start (start, never say hello), --marker=<file> (leave that file behind when SIGTERM arrives), --no-pdeathsig (do not ask the kernel for a signal when the master dies) and
  * --ignore-eof (stay alive when the channel closes, so only a signal can end the worker).
  *
- * It answers these methods: argv, env, cwd, stdin, raw, pid, ppid, echo, fds, say, flood, exit, busy, handler-term,
+ * It answers these methods: die, sleep, bloat, argv, env, cwd, stdin, raw, pid, ppid, echo, fds, say, flood, exit, busy, handler-term,
  * ignore-term, fork-holder. A timer of 40 seconds ends it whatever happens, so a failed test
  * never leaves a stray process behind.
  */
 
 declare(strict_types=1);
+
+use Amp\Cancellation;
 
 use function Amp\delay;
 
@@ -31,6 +33,15 @@ use Raphp\Runtime\Libc\ParentDeathSignal;
 use Revolt\EventLoop;
 
 require __DIR__ . '/../../../vendor/autoload.php';
+
+/**
+ * Memory a worker was asked to keep, so the memory tests can make it grow.
+ */
+final class Hoard
+{
+    /** @var list<string> */
+    public static array $items = [];
+}
 
 function currentPid(): int
 {
@@ -64,6 +75,14 @@ if (isset($options['marker'])) {
     });
 }
 
+if (isset($options['fail-start'])) {
+    exit(5); // a worker that cannot start, for the restart tests
+}
+
+if (isset($options['hang-start'])) {
+    sleep(30); // a worker that starts but never says hello (the 40 second alarm ends it anyway)
+}
+
 $handlers = new HandlerRegistry();
 $handlers->register('argv', static fn(): array => array_slice($argv ?? [], 1));
 $handlers->register('env', static function (RpcRequest $request): ?string {
@@ -81,6 +100,38 @@ $handlers->register('raw', static function (RpcRequest $request): null {
     fwrite(STDERR, is_string($err) ? $err : '');
 
     return null;
+});
+$handlers->register('die', static function (): null {
+    posix_kill(posix_getpid(), SIGKILL);
+
+    return null;
+});
+$handlers->register('sleep', static function (RpcRequest $request, ?Cancellation $cancellation): string {
+    $seconds = $request->params['seconds'] ?? 0;
+    delay(is_int($seconds) || is_float($seconds) ? (float) $seconds : 0.0, true, $cancellation);
+
+    return 'slept';
+});
+$handlers->register('sleep-pid', static function (RpcRequest $request, ?Cancellation $cancellation): int {
+    $seconds = $request->params['seconds'] ?? 0;
+    delay(is_int($seconds) || is_float($seconds) ? (float) $seconds : 0.0, true, $cancellation);
+
+    return posix_getpid();
+});
+$handlers->register('record-term', static function (RpcRequest $request): string {
+    $path = $request->params['path'] ?? '';
+    pcntl_async_signals(true);
+    pcntl_signal(SIGTERM, static function () use ($path): void {
+        file_put_contents(is_string($path) ? $path : '/dev/null', 'sigterm'); // noted, and ignored: the worker keeps running
+    });
+
+    return 'ok';
+});
+$handlers->register('bloat', static function (RpcRequest $request): int {
+    $bytes = $request->params['bytes'] ?? 0;
+    Hoard::$items[] = str_repeat('x', is_int($bytes) ? $bytes : 0);
+
+    return posix_getpid();
 });
 $handlers->register('pid', static fn(): int => currentPid());
 $handlers->register('ppid', static fn(): int => posix_getppid());

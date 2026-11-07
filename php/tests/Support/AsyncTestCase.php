@@ -48,6 +48,25 @@ abstract class AsyncTestCase extends TestCase
     }
 
     /**
+     * Waits until the condition holds, polling; returns whether it did within the time.
+     *
+     * @param \Closure(): bool $condition
+     */
+    protected function eventually(\Closure $condition, float $seconds = 5.0): bool
+    {
+        $deadline = hrtime(true) + (int) ($seconds * 1e9);
+        while (!$condition()) {
+            if (hrtime(true) > $deadline) {
+                return false;
+            }
+
+            delay(0.01);
+        }
+
+        return true;
+    }
+
+    /**
      * Lets queued callbacks and destructors run.
      */
     protected function settle(float $seconds = 0.02): void

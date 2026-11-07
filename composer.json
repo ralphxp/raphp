@@ -23,6 +23,7 @@
     "php-di/php-di": "^7.1",
     "psr/clock": "^1.0",
     "psr/container": "^2.0",
+    "psr/event-dispatcher": "^1.0",
     "psr/log": "^3.0",
     "revolt/event-loop": "^1"
   },

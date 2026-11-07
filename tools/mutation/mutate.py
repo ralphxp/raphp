@@ -55,6 +55,12 @@ FOCUS = {
     'Process/OrphanGuard.php': 'WorkerSpec|ProcessOrphan|ProcessSpawner',
     'Process/ChannelFactory.php': 'ChannelFactory|ProcessSpawner|ProcessOrphan',
     'Runtime/Libc/ParentDeathSignal.php': 'ProcessOrphan',
+    'Supervisor/Internal/Member.php': 'SupervisorTest',
+    'Supervisor/Supervisor.php': 'SupervisorTest',
+    'Supervisor/RestartPolicy.php': 'SupervisorValues|SupervisorTest',
+    'Supervisor/RecyclePolicy.php': 'SupervisorValues',
+    'Supervisor/WorkerDefinition.php': 'SupervisorValues',
+    'Supervisor/Internal/ProcessMemory.php': 'SupervisorValues',
     'Core/Kernel.php': 'Kernel',
     'Async/BackgroundTasks.php': 'BackgroundTasks',
 }
