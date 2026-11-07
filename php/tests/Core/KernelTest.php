@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Raphp\Tests\Core;
 
+use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 use Raphp\Core\Kernel;
 use Raphp\Tests\Support\ChildProcess;
@@ -13,6 +14,7 @@ use Raphp\Tests\Support\ChildResult;
  * Integration tests: every case runs the kernel in a real child process, because exit codes and
  * signals cannot be observed from inside the process that is exiting.
  */
+#[Group('slow')]
 final class KernelTest extends TestCase
 {
     /**

@@ -15,6 +15,7 @@ use function Amp\delay;
 use function Amp\Future\await;
 
 use Closure;
+use PHPUnit\Framework\Attributes\Group;
 use Raphp\Error\RequestCancelledException;
 use Raphp\Error\RequestTimeoutException;
 use Raphp\Error\WorkerUnavailableException;
@@ -30,6 +31,7 @@ use Throwable;
  * Limits and flow control: how many calls run at once, what waits, what fails, and that two
  * peers that send a lot cannot block each other (finding F38).
  */
+#[Group('slow')]
 final class RpcPeerLimitsTest extends AsyncTestCase
 {
     private ?PeerPair $pair = null;

@@ -13,6 +13,7 @@ use function Amp\delay;
 use function Amp\Future\await;
 
 use Closure;
+use PHPUnit\Framework\Attributes\Group;
 use Raphp\Error\WorkerCrashedException;
 use Raphp\Ipc\Message\Hello;
 use Raphp\Rpc\RpcPeerOptions;
@@ -27,6 +28,7 @@ use Throwable;
  * Liveness (FRAMEWORK 6.8): pings after silence, a dead peer declared after too many silent
  * intervals, no false positives, and the R19 case of a large message in flight.
  */
+#[Group('slow')]
 final class RpcPeerHeartbeatTest extends AsyncTestCase
 {
     private const float INTERVAL = 0.05;

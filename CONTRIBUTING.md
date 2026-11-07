@@ -22,3 +22,18 @@ Run `make check` to run all of them. The Rust checks are skipped until the shim 
 ## Names
 
 The project was renamed from the code name `niphy` to Raphp on 2026-11-06 (D28). Use the new names everywhere: namespace `Raphp\`, `libraphp`, `raphp.json`, `RAPHP_*` variables, C prefix `raphp_`, CLI `rlm`. The old name survives only in the spike code under `spikes/`, which is throwaway and is not renamed. Do not copy `niphy` names from there into new code.
+
+## Checks: what to run, and when
+
+Time and machine resources are limited, so each check runs at the point where it pays for itself.
+
+| When | Run | Cost |
+|---|---|---|
+| While writing code | `make fast` (formatting, PHPStan, and the tests not tagged `slow`) | about 10 s |
+| Before calling a step done | `make check` once, and a second time only if the step touches processes, timers or the heartbeat | about 40 s |
+| After a step | mutation testing of the **new** code only, 15 to 25 well-chosen changes, with `tools/mutation/mutate.py` | a few minutes |
+| At a checkpoint | an independent review, and a full mutation pass | longer; once per phase |
+
+- The tests tagged `#[Group('slow')]` use real processes, timers or heartbeats. They are about 5 classes but 80% of the test time. CI runs everything.
+- `tools/mutation/mutate.py` runs only the tests that belong to the file being changed and stops at the first failure. Add entries to its `FOCUS` table for new files. A mutant that survives is either a missing test or a change that cannot be observed (for example, an explicit `fclose` of a resource PHP closes anyway); say which.
+- Do not repeat a full run "to be sure". Repeat only when a timing-sensitive test has failed once.

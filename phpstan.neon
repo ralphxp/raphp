@@ -18,13 +18,22 @@ parameters:
   checkMissingCallableSignature: true
   reportUnmatchedIgnoredErrors: true
 
+  # FFI creates the methods of a C library at run time, so static analysis cannot know them. This is
+  # the only place libc is called, and the one name allowed is prctl.
+  ignoreErrors:
+    -
+      message: '#^Call to an undefined method FFI::prctl\(\)\.$#'
+      path: php/src/Runtime/Libc/ParentDeathSignal.php
+      count: 1
+
   # Forbidden calls. These ban by function name: whether the rule can tell a string
   # proc_open() argument from an array one is unverified (plan P1.3).
   disallowedFunctionCalls:
     -
       function: 'proc_open()'
-      message: 'Workers are spawned only by the process spawner, with an array command (FRAMEWORK 5.1, D18). The spawner is allowed in P2.9, when that class exists. Tests may spawn throwaway scripts through php/tests/Support only, with an array command and pipes (never sockets).'
+      message: 'Workers are spawned only by the process spawner, with an array command (FRAMEWORK 5.1, D18). Tests may spawn throwaway scripts through php/tests/Support only, with an array command and pipes (never sockets).'
       allowIn:
+        - php/src/Process/ProcessSpawner.php
         - php/tests/Support/*
     -
       function: 'stream_socket_pair()'
