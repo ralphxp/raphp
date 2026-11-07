@@ -8,6 +8,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - Renamed the project from the code name niphy to Raphp (namespace `Raphp\`, `libraphp`, `raphp.json`, `RAPHP_*` variables, CLI `rlm`). Spike code under `spikes/` keeps the old names.
 
 ### Added
+- Attribute handlers (step P2.8): `#[RpcMethod]` and `#[Idempotent]`, a method catalog read from the attributes, handlers registered from a container with parameters filled by name and type, and a retry middleware that repeats only idempotent methods.
 - Handshake and heartbeat (step P2.7): `hello` exchange with a protocol version check, `bye` with an error code, a graceful `shutdown()`, and a heartbeat that declares a silent peer dead without blaming one that is busy sending a large message.
 - RPC peer (step P2.6): `RpcPeer` for calling and answering over a connection, with progress events, cancellation, timeouts, limits that bound memory, a handler registry and middleware (timing, trace id, error mapping).
 - IPC transport (step P2.5): a `Transport` interface and `StreamTransport` over a stream socket, with back-pressure, an `end()` that waits for pending writes, and an immediate `close()` that cancels event-loop watchers first.
