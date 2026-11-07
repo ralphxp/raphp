@@ -12,17 +12,22 @@ use Amp\CancelledException;
 use Amp\CompositeCancellation;
 use Amp\DeferredCancellation;
 use Amp\DeferredFuture;
+
+use function Amp\delay;
+
 use Amp\TimeoutCancellation;
 use Closure;
 use LogicException;
 use Psr\Log\LoggerInterface;
 use Raphp\Async\BackgroundTasks;
+use Raphp\Error\ErrorCode;
 use Raphp\Error\InternalErrorException;
 use Raphp\Error\PayloadTooLargeException;
 use Raphp\Error\ProtocolException;
 use Raphp\Error\RequestCancelledException;
 use Raphp\Error\RequestTimeoutException;
 use Raphp\Error\RpcException;
+use Raphp\Error\Text;
 use Raphp\Error\WorkerCrashedException;
 use Raphp\Error\WorkerUnavailableException;
 use Raphp\Ipc\Codec\Codec;
@@ -32,16 +37,20 @@ use Raphp\Ipc\Message\Cancel;
 use Raphp\Ipc\Message\Envelope;
 use Raphp\Ipc\Message\EnvelopeReader;
 use Raphp\Ipc\Message\Event;
+use Raphp\Ipc\Message\Hello;
 use Raphp\Ipc\Message\Ping;
 use Raphp\Ipc\Message\Pong;
 use Raphp\Ipc\Message\Request;
 use Raphp\Ipc\Message\Response;
+use Raphp\Ipc\Message\Validation;
+use Raphp\Ipc\Protocol;
 use Raphp\Ipc\Transport\Transport;
 use Raphp\Rpc\Internal\ClosureHandler;
 use Raphp\Rpc\Internal\ClosureProgressReporter;
 use Raphp\Rpc\Internal\OutboundQueue;
 use Raphp\Rpc\Internal\PendingCall;
 use Raphp\Rpc\Internal\Slots;
+use Revolt\EventLoop;
 use Throwable;
 
 /**
@@ -62,8 +71,16 @@ use Throwable;
  * **Closing.** When the connection ends, every call still waiting fails: with `E_WORKER_CRASHED`
  * when the other side vanished without saying `bye` (a `bye` closes the connection at once, so
  * what follows it is never read), with `E_WORKER_UNAVAILABLE` after a local
- * {@see self::close()} or a `bye`. A protocol violation by the other side closes the connection
- * and fails the calls with that error. Nothing is written back first (P2.7 adds `bye`).
+ * {@see self::close()} or a `bye` (unless the `bye` names an error code, which the calls then
+ * fail with). A protocol violation by the other side fails the calls with that error and closes
+ * the connection after a last `bye` that names it. {@see self::shutdown()} does the same on purpose.
+ *
+ * **Handshake and heartbeat (FRAMEWORK 6.5, 6.8).** With a `hello` given, each side sends it first
+ * and expects the other's before anything else; a different protocol version, a second `hello`,
+ * another message first, or none in time ends the connection with `bye` and `E_PROTOCOL`. With a
+ * ping interval set, a `ping` goes out after that much silence, and the peer is declared dead after
+ * a number of silent intervals. Silence means no bytes at all, not no `pong`: a peer in the middle
+ * of a huge message is alive, even though its `pong` waits behind that message (finding R19).
  *
  * **Never blocking the reader.** One fiber reads and another writes. The reader only queues what
  * it needs to send, so two peers that both send a lot cannot block each other (finding F38).
@@ -99,6 +116,21 @@ final class RpcPeer
 
     private bool $started = false;
 
+    /** The other side's `hello`, once it has arrived. */
+    private ?Hello $remote = null;
+
+    /** @var DeferredFuture<Hello> */
+    private readonly DeferredFuture $handshake;
+
+    /** Monotonic seconds at which bytes last arrived from the other side. */
+    private float $lastHeard = 0.0;
+
+    private readonly DeferredCancellation $stop;
+
+    private ?string $handshakeTimer = null;
+
+    private ?string $flushTimer = null;
+
     private bool $closed = false;
 
     private ?RpcException $closedBecause = null;
@@ -106,7 +138,7 @@ final class RpcPeer
     /**
      * @param RpcHandler $handler answers the other side's requests, usually a {@see HandlerRegistry}
      * @param (Closure(string, array<array-key, mixed>): void)|null $onEvent called for each event that belongs to no request, with its method and params
-     * @param (Closure(Envelope): void)|null $onControl called for `hello` and `pong` messages (the handshake and heartbeat of P2.7)
+     * @param Hello|null $hello what this side announces first; null means no handshake is used
      */
     public function __construct(
         private readonly Transport $transport,
@@ -118,12 +150,15 @@ final class RpcPeer
         MiddlewareStack $inboundMiddleware = new MiddlewareStack(),
         MiddlewareStack $outboundMiddleware = new MiddlewareStack(),
         private readonly ?Closure $onEvent = null,
-        private readonly ?Closure $onControl = null,
+        private readonly ?Hello $hello = null,
     ) {
         $this->outbound = new OutboundQueue($options->outboundBuffer, $options->outboundBuffer);
         $this->slots = new Slots($options->maxInFlight, $options->maxQueuedCalls);
         $this->tasks = new BackgroundTasks($logger);
         $this->finished = new DeferredFuture();
+        $this->handshake = new DeferredFuture();
+        $this->handshake->getFuture()->ignore();
+        $this->stop = new DeferredCancellation();
         $this->inboundChain = $inboundMiddleware->wrap($handler);
         $this->outboundChain = $outboundMiddleware->wrap(new ClosureHandler($this->transmit(...)));
     }
@@ -140,8 +175,59 @@ final class RpcPeer
         }
 
         $this->started = true;
+        $this->lastHeard = $this->now();
+
+        if ($this->hello !== null) {
+            $this->queueNow($this->hello);
+            $this->handshakeTimer = EventLoop::delay($this->options->handshakeTimeout, function (): void {
+                $this->handshakeTimer = null;
+                if ($this->remote === null) {
+                    $this->failProtocol(new ProtocolException("no hello arrived within {$this->options->handshakeTimeout} seconds"));
+                }
+            });
+        }
+
         async($this->writeLoop(...))->ignore();
         async($this->readLoop(...))->ignore();
+        if ($this->options->pingInterval !== null) {
+            $interval = $this->options->pingInterval;
+            async(fn() => $this->heartbeatLoop($interval))->ignore();
+        }
+    }
+
+    /**
+     * The other side's `hello`, or null while it has not arrived (or when no handshake is used).
+     */
+    public function remote(): ?Hello
+    {
+        return $this->remote;
+    }
+
+    /**
+     * Waits for the other side's `hello` and returns it.
+     *
+     * @throws LogicException when this peer was built without a `hello`, so there is no handshake
+     * @throws RpcException when the handshake fails or the connection ends first
+     * @throws CancelledException
+     */
+    public function awaitHandshake(?Cancellation $cancellation = null): Hello
+    {
+        if ($this->hello === null) {
+            throw new LogicException('this peer was built without a hello, so there is no handshake to wait for');
+        }
+
+        return $this->handshake->getFuture()->await($cancellation);
+    }
+
+    /**
+     * Ends the connection on purpose: calls still waiting fail with `E_WORKER_UNAVAILABLE`, requests
+     * being handled are cancelled, and a last `bye` with the given reason is sent before the
+     * connection is closed (within the flush timeout). Returns at once; use {@see self::awaitClosed()}
+     * to wait for the end.
+     */
+    public function shutdown(string $reason = 'shutdown'): void
+    {
+        $this->closeBecause(new WorkerUnavailableException('the connection was shut down here'), new Bye(Text::truncate($reason, Validation::MAX_TEXT_BYTES)));
     }
 
     /**
@@ -188,6 +274,53 @@ final class RpcPeer
     public function close(): void
     {
         $this->closeBecause(new WorkerUnavailableException('the connection was closed here'));
+    }
+
+    /**
+     * Pings after silence and declares the peer dead after too many silent intervals. Silence is
+     * measured in bytes heard, so a slow transfer of a large message keeps the peer alive.
+     */
+    private function heartbeatLoop(float $interval): void
+    {
+        $deadAfter = $interval * $this->options->missedPings;
+        $lastTick = $this->now();
+
+        try {
+            while (!$this->closed) {
+                delay($interval, true, $this->stop->getCancellation());
+                $now = $this->now();
+
+                // If this process itself was not running for a long while (a blocking call, a stopped
+                // process), the silence says nothing about the peer: give it a fresh start.
+                if ($now - $lastTick > $interval * 2) {
+                    $this->lastHeard = $now;
+                    $lastTick = $now;
+
+                    continue;
+                }
+
+                $lastTick = $now;
+                $silence = $now - $this->lastHeard;
+
+                if ($silence >= $deadAfter) {
+                    $this->logger->warning('the peer is silent, declaring it dead', ['seconds' => round($silence, 3)]);
+                    $this->closeBecause(new WorkerCrashedException("the peer sent nothing for {$this->options->missedPings} ping intervals"));
+
+                    return;
+                }
+
+                if ($silence >= $interval) {
+                    $this->queueNow(new Ping(), 'ping');
+                }
+            }
+        } catch (CancelledException) {
+            // the connection closed while waiting
+        }
+    }
+
+    private function now(): float
+    {
+        return hrtime(true) / 1_000_000_000;
     }
 
     public function isClosed(): bool
@@ -305,6 +438,10 @@ final class RpcPeer
             while (($line = $this->outbound->pop()) !== null) {
                 $this->transport->write($line);
             }
+
+            // The queue ended: either the connection was closed (nothing left to do) or a last
+            // message was queued and is now written, so the connection can go.
+            $this->hardClose();
         } catch (StreamException $exception) {
             $this->closeBecause(new WorkerCrashedException('writing to the peer failed', null, $exception));
         } catch (Throwable $exception) {
@@ -344,6 +481,7 @@ final class RpcPeer
 
         try {
             while (($chunk = $this->transport->read()) !== null) {
+                $this->lastHeard = $this->now();
                 $decoder->feed($chunk);
                 if (!$this->drain($decoder)) {
                     return;
@@ -398,11 +536,17 @@ final class RpcPeer
     private function failProtocol(RpcException $problem): void
     {
         $this->logger->warning('the peer broke the protocol, closing the connection', ['code' => $problem->wireCode(), 'problem' => $problem->getMessage()]);
-        $this->closeBecause($problem);
+        $this->closeBecause($problem, new Bye(Text::truncate($problem->wireCode() . ': ' . $problem->getMessage(), Validation::MAX_TEXT_BYTES)));
     }
 
     private function dispatch(Envelope $envelope): void
     {
+        if ($this->hello !== null && $this->remote === null && !$envelope instanceof Hello && !$envelope instanceof Bye && !$envelope instanceof Ping && !$envelope instanceof Pong) {
+            $this->failProtocol(new ProtocolException("expected hello first, got {$envelope->kind()->value}"));
+
+            return;
+        }
+
         if ($envelope instanceof Request) {
             $this->accept($envelope);
         } elseif ($envelope instanceof Response) {
@@ -414,12 +558,54 @@ final class RpcPeer
         } elseif ($envelope instanceof Ping) {
             $this->queueNow(new Pong(), 'pong');
         } elseif ($envelope instanceof Bye) {
-            $this->closeBecause(new WorkerUnavailableException('the peer said bye' . ($envelope->reason === '' ? '' : ": {$envelope->reason}")));
-        } elseif ($this->onControl !== null) {
-            $this->callBack(fn() => ($this->onControl)($envelope), 'control message');
-        } else {
-            $this->logger->debug('a control message arrived and nothing handles it', ['kind' => $envelope->kind()->value]);
+            $this->closeBecause($this->reasonOfBye($envelope));
+        } elseif ($envelope instanceof Hello) {
+            $this->receivedHello($envelope);
         }
+        // A pong needs nothing: arriving at all was already counted as proof of life.
+    }
+
+    private function receivedHello(Hello $remote): void
+    {
+        if ($this->hello === null) {
+            $this->logger->debug('a hello arrived but this peer does not use a handshake');
+
+            return;
+        }
+
+        if ($this->remote !== null) {
+            $this->failProtocol(new ProtocolException('a second hello arrived'));
+
+            return;
+        }
+
+        if ($remote->proto !== Protocol::VERSION) {
+            $this->failProtocol(new ProtocolException("unsupported protocol version {$remote->proto}, this side speaks " . Protocol::VERSION));
+
+            return;
+        }
+
+        $this->remote = $remote;
+        if ($this->handshakeTimer !== null) {
+            EventLoop::cancel($this->handshakeTimer);
+            $this->handshakeTimer = null;
+        }
+
+        $this->handshake->complete($remote);
+    }
+
+    /**
+     * Why the connection ends when the other side says `bye`. A reason that starts with a framework
+     * error code and a colon (`E_PROTOCOL: unsupported protocol version 2`) is that error; anything
+     * else is an ordinary, orderly goodbye.
+     */
+    private function reasonOfBye(Bye $bye): RpcException
+    {
+        if (preg_match('/\A(E_[A-Z0-9_]+): (.*)\z/s', $bye->reason, $found) === 1 && ErrorCode::fromWire($found[1]) !== null) {
+            return RpcException::fromWire(['code' => $found[1], 'message' => "the peer said bye: {$found[2]}"]);
+        }
+
+        return new WorkerUnavailableException('the peer said bye' . ($bye->reason === '' ? '' : ": {$bye->reason}"));
     }
 
     private function complete(Response $response): void
@@ -569,7 +755,12 @@ final class RpcPeer
 
     // ------------------------------------------------------------ closing
 
-    private function closeBecause(RpcException $reason): void
+    /**
+     * Ends the connection. Waiting calls fail with the reason and running requests are cancelled at
+     * once. With a farewell, that last message is written first and the connection closes once it is
+     * out (or after the flush timeout); without one it closes now.
+     */
+    private function closeBecause(RpcException $reason, ?Bye $farewell = null): void
     {
         if ($this->closed) {
             return;
@@ -596,8 +787,44 @@ final class RpcPeer
         }
 
         $this->slots->close();
+        $this->stop->cancel();
+
+        if (!$this->handshake->isComplete()) {
+            $this->handshake->error($reason);
+        }
+
+        if ($farewell !== null && $this->outbound->pushNow($this->codec->encode($farewell->toArray()))) {
+            // The writer drains the queue, writes the farewell and then closes (see writeLoop).
+            $this->outbound->finish();
+            $this->flushTimer = EventLoop::delay($this->options->flushTimeout, function (): void {
+                $this->flushTimer = null;
+                $this->hardClose();
+            });
+
+            return;
+        }
+
+        $this->hardClose();
+    }
+
+    /**
+     * Drops what is queued, closes the transport and signals that the connection is over.
+     */
+    private function hardClose(): void
+    {
+        foreach ([&$this->handshakeTimer, &$this->flushTimer] as &$timer) {
+            if ($timer !== null) {
+                EventLoop::cancel($timer);
+                $timer = null;
+            }
+        }
+
+        unset($timer);
+
         $this->outbound->close();
         $this->transport->close();
-        $this->finished->complete();
+        if (!$this->finished->isComplete()) {
+            $this->finished->complete();
+        }
     }
 }

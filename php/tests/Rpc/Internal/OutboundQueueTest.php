@@ -233,4 +233,61 @@ final class OutboundQueueTest extends AsyncTestCase
 
         self::assertSame(['null'], $ended->entries());
     }
+
+    public function testFinishingKeepsWhatWaitsAndThenEndsTheWriter(): void
+    {
+        $queue = new OutboundQueue(10);
+        $queue->push('a');
+        $queue->pushNow('b');
+
+        $queue->finish();
+
+        self::assertSame('a', $queue->pop());
+        self::assertSame('b', $queue->pop());
+        self::assertNull($queue->pop(), 'once empty, a finished queue ends the writer');
+    }
+
+    public function testAFinishedQueueAcceptsNothingMore(): void
+    {
+        $queue = new OutboundQueue(10, 10);
+        $queue->finish();
+
+        self::assertFalse($queue->pushNow('late'));
+        $this->expectException(WorkerUnavailableException::class);
+
+        $queue->push('late');
+    }
+
+    public function testFinishingWakesAWriterThatIsWaitingAndSendersThatWaitForRoom(): void
+    {
+        $queue = new OutboundQueue(1);
+        $queue->push('full');
+        $sender = new Recorder();
+        $waiting = async(static function () use ($queue, $sender): void {
+            try {
+                $queue->push('waiting');
+            } catch (WorkerUnavailableException) {
+                $sender->add('refused');
+            }
+        });
+        delay(0.01);
+
+        $queue->finish();
+        $waiting->await();
+
+        self::assertSame(['refused'], $sender->entries());
+        self::assertSame('full', $queue->pop());
+        self::assertNull($queue->pop());
+
+        $idle = new OutboundQueue(1);
+        $ended = new Recorder();
+        async(static function () use ($idle, $ended): void {
+            $ended->add($idle->pop() === null ? 'null' : 'line');
+        })->ignore();
+        delay(0.01);
+        $idle->finish();
+        delay(0.01);
+
+        self::assertSame(['null'], $ended->entries());
+    }
 }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Raphp\Tests\Rpc;
 
+use Closure;
 use InvalidArgumentException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
@@ -75,6 +76,40 @@ final class RpcValuesTest extends TestCase
         (new NullProgressReporter())->report(['done' => 1]);
 
         self::addToAssertionCount(1);
+    }
+
+    /**
+     * @return iterable<string, array{Closure(): RpcPeerOptions}>
+     */
+    public static function badTimings(): iterable
+    {
+        yield 'a ping interval of zero' => [static fn(): RpcPeerOptions => new RpcPeerOptions(pingInterval: 0.0)];
+        yield 'a negative ping interval' => [static fn(): RpcPeerOptions => new RpcPeerOptions(pingInterval: -1.0)];
+        yield 'no missed pings allowed' => [static fn(): RpcPeerOptions => new RpcPeerOptions(missedPings: 0)];
+        yield 'a handshake timeout of zero' => [static fn(): RpcPeerOptions => new RpcPeerOptions(handshakeTimeout: 0.0)];
+        yield 'a flush timeout of zero' => [static fn(): RpcPeerOptions => new RpcPeerOptions(flushTimeout: 0.0)];
+        yield 'a negative flush timeout' => [static fn(): RpcPeerOptions => new RpcPeerOptions(flushTimeout: -0.5)];
+    }
+
+    /**
+     * @param Closure(): RpcPeerOptions $build
+     */
+    #[DataProvider('badTimings')]
+    public function testAnIntervalOrTimeoutThatIsNotPositiveIsRefused(Closure $build): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+
+        $build();
+    }
+
+    public function testTheHeartbeatIsOffByDefaultAndTheOtherTimingDefaultsAreTheDocumentedOnes(): void
+    {
+        $options = new RpcPeerOptions();
+
+        self::assertNull($options->pingInterval);
+        self::assertSame(3, $options->missedPings);
+        self::assertSame(5.0, $options->handshakeTimeout);
+        self::assertSame(2.0, $options->flushTimeout);
     }
 
     public function testTheDefaultLimitsAreTheDocumentedOnes(): void

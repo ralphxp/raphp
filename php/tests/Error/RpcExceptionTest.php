@@ -154,7 +154,7 @@ final class RpcExceptionTest extends TestCase
     {
         $exception = RpcException::fromWire(['code' => 'E_INTERNAL', 'message' => str_repeat('a', 100_000)]);
 
-        self::assertSame(RpcException::MAX_PEER_MESSAGE_BYTES + 3, strlen($exception->getMessage()));
+        self::assertSame(RpcException::MAX_PEER_MESSAGE_BYTES, strlen($exception->getMessage()), 'the limit includes the three dots that mark the cut');
         self::assertStringEndsWith('...', $exception->getMessage());
     }
 
@@ -173,7 +173,7 @@ final class RpcExceptionTest extends TestCase
                 $message = RpcException::fromWire(['code' => 'E_INTERNAL', 'message' => $text])->getMessage();
 
                 self::assertSame(1, preg_match('//u', $message), 'the cut message must still be valid UTF-8');
-                self::assertLessThanOrEqual(RpcException::MAX_PEER_MESSAGE_BYTES + 3, strlen($message));
+                self::assertLessThanOrEqual(RpcException::MAX_PEER_MESSAGE_BYTES, strlen($message));
             }
         }
     }

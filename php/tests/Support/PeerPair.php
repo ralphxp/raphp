@@ -10,6 +10,7 @@ use Monolog\Logger;
 use Raphp\Ipc\Codec\Codec;
 use Raphp\Ipc\Codec\JsonLineCodec;
 use Raphp\Ipc\Message\EnvelopeReader;
+use Raphp\Ipc\Message\Hello;
 use Raphp\Ipc\Transport\StreamTransport;
 use Raphp\Rpc\HandlerRegistry;
 use Raphp\Rpc\MiddlewareStack;
@@ -44,6 +45,8 @@ final readonly class PeerPair
         Codec $serverCodec = new JsonLineCodec(),
         ?Closure $clientOnEvent = null,
         ?Closure $serverOnEvent = null,
+        ?Hello $clientHello = null,
+        ?Hello $serverHello = null,
     ): self {
         $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
         if ($sockets === false) {
@@ -56,8 +59,8 @@ final readonly class PeerPair
         $serverHandlers = new HandlerRegistry();
         $reader = new EnvelopeReader();
 
-        $client = new RpcPeer(StreamTransport::fromResource($sockets[0]), new JsonLineCodec(), $reader, new Logger('client', [$clientLogs]), $clientHandlers, $clientOptions, new MiddlewareStack(), $clientOutbound, $clientOnEvent);
-        $server = new RpcPeer(StreamTransport::fromResource($sockets[1]), $serverCodec, $reader, new Logger('server', [$serverLogs]), $serverHandlers, $serverOptions, $serverInbound, new MiddlewareStack(), $serverOnEvent);
+        $client = new RpcPeer(StreamTransport::fromResource($sockets[0]), new JsonLineCodec(), $reader, new Logger('client', [$clientLogs]), $clientHandlers, $clientOptions, new MiddlewareStack(), $clientOutbound, $clientOnEvent, $clientHello);
+        $server = new RpcPeer(StreamTransport::fromResource($sockets[1]), $serverCodec, $reader, new Logger('server', [$serverLogs]), $serverHandlers, $serverOptions, $serverInbound, new MiddlewareStack(), $serverOnEvent, $serverHello);
         $client->start();
         $server->start();
 

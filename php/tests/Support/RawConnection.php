@@ -9,8 +9,8 @@ use Monolog\Handler\TestHandler;
 use Monolog\Logger;
 use Raphp\Ipc\Codec\Codec;
 use Raphp\Ipc\Codec\JsonLineCodec;
-use Raphp\Ipc\Message\Envelope;
 use Raphp\Ipc\Message\EnvelopeReader;
+use Raphp\Ipc\Message\Hello;
 use Raphp\Ipc\Transport\StreamTransport;
 use Raphp\Rpc\HandlerRegistry;
 use Raphp\Rpc\MiddlewareStack;
@@ -31,14 +31,14 @@ final readonly class RawConnection
 
     /**
      * @param (Closure(string, array<array-key, mixed>): void)|null $onEvent
-     * @param (Closure(Envelope): void)|null $onControl
+     * @param Hello|null $hello what the peer announces first; null means no handshake
      */
     public static function open(
         RpcPeerOptions $options = new RpcPeerOptions(),
         Codec $codec = new JsonLineCodec(),
         MiddlewareStack $outbound = new MiddlewareStack(),
         ?Closure $onEvent = null,
-        ?Closure $onControl = null,
+        ?Hello $hello = null,
     ): self {
         $sockets = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
         if ($sockets === false) {
@@ -47,7 +47,7 @@ final readonly class RawConnection
 
         $logs = new TestHandler();
         $handlers = new HandlerRegistry();
-        $peer = new RpcPeer(StreamTransport::fromResource($sockets[0]), $codec, new EnvelopeReader(), new Logger('peer', [$logs]), $handlers, $options, new MiddlewareStack(), $outbound, $onEvent, $onControl);
+        $peer = new RpcPeer(StreamTransport::fromResource($sockets[0]), $codec, new EnvelopeReader(), new Logger('peer', [$logs]), $handlers, $options, new MiddlewareStack(), $outbound, $onEvent, $hello);
         $peer->start();
 
         return new self($peer, new RawEnd(StreamTransport::fromResource($sockets[1])), $handlers, $logs);

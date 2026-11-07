@@ -31,6 +31,8 @@ final class OutboundQueue
 
     private bool $closed = false;
 
+    private bool $finishing = false;
+
     private readonly WaitList $space;
 
     private readonly WaitList $readers;
@@ -52,7 +54,7 @@ final class OutboundQueue
      */
     public function push(string $line, ?Cancellation $cancellation = null): void
     {
-        while (!$this->closed && $this->items->count() >= $this->capacity) {
+        while (!$this->closed && !$this->finishing && $this->items->count() >= $this->capacity) {
             $this->space->wait($cancellation);
         }
 
@@ -70,7 +72,7 @@ final class OutboundQueue
      */
     public function pushNow(string $line, ?string $key = null): bool
     {
-        if ($this->closed) {
+        if ($this->closed || $this->finishing) {
             return false;
         }
 
@@ -98,7 +100,7 @@ final class OutboundQueue
     public function pop(): ?string
     {
         while ($this->items->isEmpty()) {
-            if ($this->closed) {
+            if ($this->closed || $this->finishing) {
                 return null;
             }
 
@@ -113,6 +115,17 @@ final class OutboundQueue
         $this->space->wakeOne();
 
         return $line;
+    }
+
+    /**
+     * Accepts nothing more but keeps what is waiting: the writer takes it all, then gets null.
+     * Senders that wait for room are refused. Used to send a last message before closing.
+     */
+    public function finish(): void
+    {
+        $this->finishing = true;
+        $this->space->wakeAll();
+        $this->readers->wakeAll();
     }
 
     /**

@@ -379,9 +379,13 @@ final class RpcPeerLimitsTest extends AsyncTestCase
         });
         $before = memory_get_usage();
 
+        // One request at a time, with the loop getting a turn in between, so handlers finish while the
+        // requests keep coming (sent in one burst they would all arrive before any handler ran, and the
+        // inbound limit alone would stop them).
         try {
-            for ($id = 1; $id <= 5000 && !$connection->peer->isClosed(); $id++) {
+            for ($id = 1; $id <= 1500 && !$connection->peer->isClosed(); $id++) {
                 $connection->raw->send(['id' => $id, 'kind' => 'req', 'method' => 'echo']);
+                delay(0);
             }
         } catch (Throwable) {
             // the peer closed the connection on us: exactly what is expected
@@ -390,7 +394,7 @@ final class RpcPeerLimitsTest extends AsyncTestCase
         delay(0.1);
 
         self::assertTrue($connection->peer->isClosed(), 'a peer that sends without reading must be cut off');
-        self::assertLessThan(1500, $handled->count(), 'the number of requests accepted must stay bounded');
+        self::assertLessThan(700, $handled->count(), 'the number of requests accepted must stay bounded (about 280 fit in the socket, then a few more in the queue)');
         self::assertLessThan(16 * 1024 * 1024, memory_get_usage() - $before);
         self::assertTrue($connection->logs->hasWarningThatContains('does not read what is sent to it'));
     }

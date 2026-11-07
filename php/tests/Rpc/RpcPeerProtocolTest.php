@@ -18,9 +18,7 @@ use Raphp\Error\RequestTimeoutException;
 use Raphp\Error\WorkerCrashedException;
 use Raphp\Error\WorkerUnavailableException;
 use Raphp\Ipc\Codec\JsonLineCodec;
-use Raphp\Ipc\Message\Envelope;
 use Raphp\Ipc\Message\Hello;
-use Raphp\Ipc\Message\Pong;
 use Raphp\Rpc\Middleware\TraceIdMiddleware;
 use Raphp\Rpc\MiddlewareStack;
 use Raphp\Rpc\RpcPeerOptions;
@@ -47,16 +45,16 @@ final class RpcPeerProtocolTest extends AsyncTestCase
 
     /**
      * @param (Closure(string, array<array-key, mixed>): void)|null $onEvent
-     * @param (Closure(Envelope): void)|null $onControl
+     * @param Hello|null $hello what the peer announces first; null means no handshake
      */
     private function connect(
         RpcPeerOptions $options = new RpcPeerOptions(),
         JsonLineCodec $codec = new JsonLineCodec(),
         MiddlewareStack $outbound = new MiddlewareStack(),
         ?Closure $onEvent = null,
-        ?Closure $onControl = null,
+        ?Hello $hello = null,
     ): RawConnection {
-        $this->connection = RawConnection::open($options, $codec, $outbound, $onEvent, $onControl);
+        $this->connection = RawConnection::open($options, $codec, $outbound, $onEvent, $hello);
 
         return $this->connection;
     }
@@ -319,29 +317,16 @@ final class RpcPeerProtocolTest extends AsyncTestCase
         self::assertFalse($connection->logs->hasWarningRecords());
     }
 
-    public function testAHelloAndAPongGoToTheControlHandler(): void
+    public function testAHelloWithoutAHandshakeAndAPongAreIgnored(): void
     {
-        $seen = new Recorder();
-        $connection = $this->connect(onControl: static function (Envelope $envelope) use ($seen): void {
-            $seen->add($envelope::class);
-        });
+        $connection = $this->connect();
 
         $connection->raw->send(['kind' => 'hello', 'proto' => 1, 'role' => 'worker', 'name' => 'main', 'pid' => 5]);
         $connection->raw->send(['kind' => 'pong']);
         $this->assertStillWorks($connection);
 
-        self::assertSame([Hello::class, Pong::class], $seen->entries());
-    }
-
-    public function testControlMessagesNobodyHandlesAreOnlyLoggedAtDebugLevel(): void
-    {
-        $connection = $this->connect();
-
-        $connection->raw->send(['kind' => 'pong']);
-        $this->assertStillWorks($connection);
-
         self::assertFalse($connection->logs->hasWarningRecords());
-        self::assertTrue($connection->logs->hasDebugThatContains('nothing handles it'));
+        self::assertTrue($connection->logs->hasDebugThatContains('does not use a handshake'));
     }
 
     public function testAResponseForACallNobodyWaitsForIsLoggedAndTheConnectionContinues(): void
@@ -382,7 +367,12 @@ final class RpcPeerProtocolTest extends AsyncTestCase
 
         self::assertInstanceOf(ProtocolException::class, $error);
         self::assertTrue($connection->peer->isClosed());
-        self::assertNull($connection->raw->receive(), 'the far end must see the connection close');
+        $farewell = $connection->raw->receive();
+        self::assertIsArray($farewell);
+        self::assertSame('bye', $farewell['kind'] ?? null, 'the far end is told why before the connection closes');
+        self::assertIsString($farewell['reason'] ?? null);
+        self::assertStringStartsWith('E_', $farewell['reason']);
+        self::assertNull($connection->raw->receive(), 'the far end must then see the connection close');
         self::assertTrue($connection->logs->hasWarningThatContains('broke the protocol'));
     }
 
@@ -435,6 +425,11 @@ final class RpcPeerProtocolTest extends AsyncTestCase
         delay(0.02);
         $connection->raw->send(['id' => 1, 'kind' => 'req', 'method' => 'wait']);
 
+        $farewell = $connection->raw->receive();
+        self::assertIsArray($farewell);
+        self::assertSame('bye', $farewell['kind'] ?? null);
+        self::assertIsString($farewell['reason'] ?? null);
+        self::assertStringContainsString('already in use', $farewell['reason']);
         self::assertNull($connection->raw->receive());
         self::assertTrue($connection->peer->isClosed());
         $connection->peer->awaitClosed();

@@ -8,6 +8,8 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - Renamed the project from the code name niphy to Raphp (namespace `Raphp\`, `libraphp`, `raphp.json`, `RAPHP_*` variables, CLI `rlm`). Spike code under `spikes/` keeps the old names.
 
 ### Added
+- Handshake and heartbeat (step P2.7): `hello` exchange with a protocol version check, `bye` with an error code, a graceful `shutdown()`, and a heartbeat that declares a silent peer dead without blaming one that is busy sending a large message.
+- RPC peer (step P2.6): `RpcPeer` for calling and answering over a connection, with progress events, cancellation, timeouts, limits that bound memory, a handler registry and middleware (timing, trace id, error mapping).
 - IPC transport (step P2.5): a `Transport` interface and `StreamTransport` over a stream socket, with back-pressure, an `end()` that waits for pending writes, and an immediate `close()` that cancels event-loop watchers first.
 - IPC messages (step P2.4): a `Kind` enum, an `Envelope` interface, eight immutable message classes and `EnvelopeReader`, which turns decoded lines into typed messages or an `E_PROTOCOL` error.
 - IPC codec (step P2.3): `Codec` and `Decoder` interfaces, `JsonLineCodec` (compact ASCII NDJSON, size and depth limits) and a pull-based incremental decoder that recovers from bad lines and stops on an oversize line, plus golden wire-format files in `docs/protocol/golden/`.
