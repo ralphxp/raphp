@@ -225,6 +225,33 @@ final class RpcPeerHeartbeatTest extends AsyncTestCase
         self::assertSame('ok', $pair->client->call('ok', timeout: 5.0));
     }
 
+    public function testSilenceBeforeTheOtherSidesHelloIsNotCountedAsLostHeartbeats(): void
+    {
+        // A worker takes time to start. Until its hello arrives only the handshake timeout (5 s here) judges it.
+        $connection = RawConnection::open(new RpcPeerOptions(pingInterval: self::INTERVAL, missedPings: 3), hello: new Hello(1, 'master', 'app', 1));
+        $this->connection = $connection;
+        $first = $connection->raw->receive();
+        self::assertIsArray($first);
+        self::assertSame('hello', $first['kind'] ?? null);
+
+        delay(self::INTERVAL * 10); // far longer than the three intervals the peer may be silent
+
+        self::assertFalse($connection->peer->isClosed(), 'the slow start was taken for a crash');
+        try {
+            $unexpected = $connection->raw->receive(0.05);
+            self::fail('a message was sent to a worker that has not said hello: ' . json_encode($unexpected));
+        } catch (CancelledException) {
+            $this->addToAssertionCount(1); // nothing arrived: no ping goes to a worker that has not said hello
+        }
+
+        $connection->raw->send(['kind' => 'hello', 'proto' => 1, 'role' => 'worker', 'name' => 'main', 'pid' => 2, 'caps' => []]);
+        $connection->peer->awaitHandshake();
+
+        // From now on the heartbeat counts: a peer that says nothing more is declared dead.
+        self::assertTrue($this->eventually(static fn(): bool => $connection->peer->isClosed(), 3.0), 'a silent peer after the hello is still declared dead');
+        self::assertInstanceOf(WorkerCrashedException::class, $connection->peer->closedBecause());
+    }
+
     public function testBothFeaturesTogetherHelloAndHeartbeat(): void
     {
         $pair = PeerPair::open(

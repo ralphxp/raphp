@@ -173,6 +173,27 @@ Most of a process's 56 MiB is not its own: a bare `php -r` already shows 52 MiB 
 | Restart wait 0.1 s doubling to 10 s, 5 crashes in 60 s | Process start is 130 ms | The first wait roughly equals the start time; the rest is a policy choice, not something to measure |
 | Heartbeat 2 s, three misses | Not measured here (behaviour is covered by tests) | Unchanged |
 
+## Filesystem: how long the loop stalls during a large file (P2B.1)
+
+`php tools/bench/filesystem.php` (default 32 MiB; a timer that should tick every millisecond records the longest gap between ticks). Same machine and load as above. Hot cache means the file was just written; "cold" drops the file from the page cache with `dd iflag=nocache` (it has no effect on tmpfs, so only the btrfs cold rows are really cold).
+
+| 32 MiB file, longest stall of the loop | tmpfs, hot | btrfs, hot | btrfs, cold |
+|---|---|---|---|
+| `openRead()`, slice 0 (a turn after every chunk) | 2.6 ms | 1.2 ms | 3.5 ms |
+| `openRead()`, slice 0.5 ms | 1.2 ms | 1.2 ms | 5.0 ms |
+| **`openRead()`, slice 2 ms (the default)** | **2.2 ms** | **2.3 ms** | **7.2 ms** |
+| `openRead()`, slice 10 ms | 10.2 ms | 10.2 ms | 14.9 ms |
+| `openRead()`, slice 50 ms | 18.7 ms | 35.6 ms | 50.3 ms |
+| `read()` (the whole file as a string) | 57.5 ms | 89.5 ms | 52.8 ms |
+| `file_get_contents()` (the built-in) | 34.8 ms | 37.8 ms | 97.4 ms |
+| `fread()` loop without yielding | 16.6 ms | 34.2 ms | 82.2 ms |
+
+Total time for the same rows (hot tmpfs): `openRead()` at the default slice 17.7 ms, `read()` 121.9 ms, `file_get_contents()` 34.7 ms.
+
+- **The stall is about one slice** (the slice plus a chunk's own time), and a slice of 2 ms costs no speed against 10 or 50 ms; a slice of 0 is slower (28 ms against 18 ms for 32 MiB). So 2 ms stays. A cold disk adds the time of one chunk read, which is where the cooperative approach helps most: the built-in read stalled the loop for 97 ms on the cold file, the stream for 7 ms.
+- **`read()` is not a good way to read a large file.** Putting the chunks together into one string is a single copy plus fresh memory pages that cannot be spread over turns of the loop: it took 120 to 230 ms for 32 MiB (three to six times the built-in) and still stalled the loop for 50 to 90 ms at the end, as long as or longer than the built-in's own stall. The chunk size makes no difference (65,536 bytes to 32 MiB: 99 to 113 ms). It needs twice the file's size in memory (a 64 MiB file ran out of the 128M `memory_limit`). It is fine for small files; large ones belong to `openRead()`. This is why `Filesystem::read()` says so in its documentation (F52).
+- A single `fread()` of one chunk can still block as long as the disk takes to return it. A slow or remote disk stalls the loop for that long.
+
 ## How much to trust this
 
 - **One machine, a loaded desktop.** Two full runs (the first before G and L were added) gave speeds that differ by up to 30% (the soak: 4,808 and 5,918 calls/s; 64 in flight: 24,145 and 17,511 calls/s), while the steady-state memory numbers agreed within 0.3 MiB (the burst peaks within 2 to 4 MiB). Use the speeds as a rough scale only.

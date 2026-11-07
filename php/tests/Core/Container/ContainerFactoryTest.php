@@ -22,6 +22,8 @@ use Raphp\Core\Clock\SystemClock;
 use Raphp\Core\Config\Config;
 use Raphp\Core\Container\ContainerFactory;
 use Raphp\Core\Logging\LogLevel;
+use Raphp\Filesystem\CooperativeFilesystem;
+use Raphp\Filesystem\Filesystem;
 use Raphp\Tests\Support\ConfigFixture;
 use Raphp\Tests\Support\FrozenClock;
 use Raphp\Tests\Support\NeedsLoggerAndClock;
@@ -51,7 +53,15 @@ final class ContainerFactoryTest extends TestCase
         self::assertTrue($container->has(Config::class));
         self::assertTrue($container->has(LoggerInterface::class));
         self::assertTrue($container->has(ClockInterface::class));
+        self::assertTrue($container->has(Filesystem::class));
         self::assertFalse($container->has('does.not.exist'));
+    }
+
+    public function testTheFilesystemServiceIsTheCooperativeOne(): void
+    {
+        $container = (new ContainerFactory())->create(ConfigFixture::config());
+
+        self::assertInstanceOf(CooperativeFilesystem::class, $container->get(Filesystem::class));
     }
 
     public function testAnUnknownServiceThrowsAPsr11NotFoundException(): void

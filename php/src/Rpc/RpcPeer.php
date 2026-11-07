@@ -290,6 +290,16 @@ final class RpcPeer
                 delay($interval, true, $this->stop->getCancellation());
                 $now = $this->now();
 
+                // A peer that has not said hello yet is still starting (a worker process takes time to
+                // boot). The handshake timeout judges that; counting the wait as missed heartbeats
+                // would kill a slow start on a loaded machine.
+                if ($this->hello !== null && $this->remote === null) {
+                    $this->lastHeard = $now;
+                    $lastTick = $now;
+
+                    continue;
+                }
+
                 // If this process itself was not running for a long while (a blocking call, a stopped
                 // process), the silence says nothing about the peer: give it a fresh start.
                 if ($now - $lastTick > $interval * 2) {

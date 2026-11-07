@@ -66,6 +66,9 @@ FOCUS = {
     'Process/InheritedChannel.php': 'InheritedChannel|WorkerRuntime',
     'Core/Kernel.php': 'Kernel',
     'Async/BackgroundTasks.php': 'BackgroundTasks',
+    'Filesystem/CooperativeFilesystem.php': 'CooperativeFilesystemTest|TimeSliceTest|BlockingCallDetector',
+    'Filesystem/CooperativeReadStream.php': 'CooperativeFilesystemTest|BlockingCallDetector',
+    'Filesystem/Internal/TimeSlice.php': 'TimeSliceTest|CooperativeFilesystemTest',
 }
 
 

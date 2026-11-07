@@ -16,6 +16,8 @@ use Psr\Log\LoggerInterface;
 use Raphp\Core\Clock\SystemClock;
 use Raphp\Core\Config\Config;
 use Raphp\Core\Logging\LoggerFactory;
+use Raphp\Filesystem\CooperativeFilesystem;
+use Raphp\Filesystem\Filesystem;
 
 /**
  * The composition root: builds the PSR-11 container (PHP-DI 7, D24).
@@ -44,6 +46,7 @@ final class ContainerFactory
         $builder->addDefinitions([
             Config::class => $config,
             ClockInterface::class => autowire(SystemClock::class),
+            Filesystem::class => autowire(CooperativeFilesystem::class),
             LoggerInterface::class => factory(
                 static fn(Config $config, ClockInterface $clock): LoggerInterface => (new LoggerFactory())->create(
                     $config->logLevel,
