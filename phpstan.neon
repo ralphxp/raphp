@@ -10,6 +10,7 @@ parameters:
     - php/src
     - php/tests
     - examples
+    - tools/bench
   tmpDir: .phpstan.cache
   checkTooWideReturnTypesInProtectedAndPublicMethods: true
   checkUninitializedProperties: true

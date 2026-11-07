@@ -10,6 +10,7 @@ $finder = (new Finder())
         __DIR__ . '/php',
         __DIR__ . '/rlm',
         __DIR__ . '/examples',
+        __DIR__ . '/tools/bench',
     ])
     ->name('*.php');
 

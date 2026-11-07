@@ -8,6 +8,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - Renamed the project from the code name niphy to Raphp (namespace `Raphp\`, `libraphp`, `raphp.json`, `RAPHP_*` variables, CLI `rlm`). Spike code under `spikes/` keeps the old names.
 
 ### Added
+- Soak and performance baseline (step P2.13): `tools/bench/bench.php` (`make bench`) and `docs/BENCHMARKS.md`, with a soak of 50,000 round trips, a memory tolerance and plateau check, payloads up to the 8 MiB limit, and start-up times.
 - Headless example (step P2.12): `examples/headless-worker`, a command-line master calling a worker with progress, Ctrl-C cancellation and recovery from a crashed worker, with tests that run it for real.
 - Worker entry (step P2.11): a strict worker command line and a runtime that protects the worker from outliving its master, leaves Ctrl-C to the master, serves calls and ends with a meaningful exit code.
 - Supervisor (step P2.10): declared workers and pools, restart with growing waits and a degraded state, killing and restarting a worker that stops answering pings, routing (round-robin, least-busy), recycling by call count or memory, ordered graceful shutdown, and PSR-14 events for every change.

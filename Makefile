@@ -11,7 +11,7 @@ BIN := vendor/bin
 RUST_DIR := shim
 
 .DEFAULT_GOAL := help
-.PHONY: help install check fast cs fix stan test test-fast rust shim header
+.PHONY: help install check fast cs fix stan test test-fast bench rust shim header
 
 help: ## Show this help
 	@grep -E '^[a-z]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-8s %s\n", $$1, $$2}'
@@ -37,6 +37,9 @@ test: ## PHPUnit (all errors visible, fails on deprecations)
 
 test-fast: ## PHPUnit without the tests tagged slow (real processes, timers, heartbeats)
 	$(PHP) $(BIN)/phpunit --exclude-group slow
+
+bench: ## Soak and performance baseline (about 45 s; not part of check). See docs/BENCHMARKS.md
+	$(PHP) tools/bench/bench.php
 
 rust: ## rustfmt, clippy and cargo test (skipped until shim/Cargo.toml exists)
 	@if [ -f $(RUST_DIR)/Cargo.toml ]; then \
