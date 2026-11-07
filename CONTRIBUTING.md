@@ -37,3 +37,13 @@ Time and machine resources are limited, so each check runs at the point where it
 - The tests tagged `#[Group('slow')]` use real processes, timers or heartbeats. They are about 5 classes but 80% of the test time. CI runs everything.
 - `tools/mutation/mutate.py` runs only the tests that belong to the file being changed and stops at the first failure. Add entries to its `FOCUS` table for new files. A mutant that survives is either a missing test or a change that cannot be observed (for example, an explicit `fclose` of a resource PHP closes anyway); say which.
 - Do not repeat a full run "to be sure". Repeat only when a timing-sensitive test has failed once.
+
+## Running the tests under another event-loop driver
+
+Revolt picks ext-uv, ext-ev or ext-event by itself when one is loaded, and Raphp must work with each (D46). To check a change under one, build the extension (for example from pecl, with `phpize`, into a scratch folder: it needs the library's `-devel` package), put `extension=/path/to/uv.so` in a file in a folder of its own, and run:
+
+```
+PHP_INI_SCAN_DIR=":/path/to/that/folder" php vendor/bin/phpunit
+```
+
+The environment variable is inherited by the worker processes the tests start, so master and workers use the same driver. `REVOLT_DRIVER` forces a specific driver class. The rule that follows from the first such run (F55): handle signals only with `EventLoop::onSignal()`; a plain `pcntl_signal()` handler waits for the next event under ext-uv.

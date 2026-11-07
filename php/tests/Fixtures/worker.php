@@ -111,8 +111,8 @@ $handlers->register('sleep-pid', static function (RpcRequest $request, ?Cancella
 });
 $handlers->register('record-term', static function (RpcRequest $request): string {
     $path = $request->params['path'] ?? '';
-    pcntl_async_signals(true);
-    pcntl_signal(SIGTERM, static function () use ($path): void {
+    // Through the loop, like the real code: a plain pcntl_signal() handler is delayed while the loop is idle under ext-uv (F55).
+    EventLoop::onSignal(SIGTERM, static function () use ($path): void {
         file_put_contents(is_string($path) ? $path : '/dev/null', 'sigterm'); // noted, and ignored: the worker keeps running
     });
 

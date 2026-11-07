@@ -68,6 +68,8 @@ FOCUS = {
     'Async/BackgroundTasks.php': 'BackgroundTasks',
     'Process/ProcessRunner.php': 'ProcessRunnerTest',
     'Process/Internal/ExecutableFinder.php': 'ProcessRunnerTest',
+    'Runtime/Accelerators.php': 'AcceleratorsTest',
+    'Runtime/Accelerator.php': 'AcceleratorsTest',
     'Stream/LineBuffer.php': 'LineBufferTest|LineReaderTest',
     'Stream/LineReader.php': 'LineReaderTest',
     'Stream/ProgressStream.php': 'ProgressStreamTest',
