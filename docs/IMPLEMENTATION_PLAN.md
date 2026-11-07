@@ -319,6 +319,8 @@ Depends on your hosting answer. Runs `make check` on PHP 8.5 (the floor, D23), p
 - The `--role=worker` bootstrap: container, handler loading, loop, exit on EOF.
 **Done when:** a worker exits promptly when the master dies, even without `prctl`: EOF-only, verified with two workers running (see P2.9 check 2). This relies on every Raphp descriptor being close-on-exec.
 
+**Result (2026-11-07):** passes. `WorkerArguments` (a strict parse of the worker command line, with a message fit to print) and `WorkerRuntime` (guard, ignore SIGINT, no SIGTERM handler, channel, hello, serve, exit codes); the worker fixture used by every process and supervisor test now runs on the real runtime, so those tests exercise it. **Done-when check:** with two workers running and the death signal off, a master killed with SIGKILL ends both by end of input alone (`ProcessOrphanTest`). A real finding: descriptor 3 can be something other than a socket (PHP's own handle on the script file) in a process that no master started, so `InheritedChannel` now checks that it is a socket. FRAMEWORK 3.4, D42.
+
 ### P2.12 Headless example. Size S
 - `examples/headless-worker`: a CLI app calling a worker with progress and cancellation (Ctrl-C cancels).
 **Done when:** I run it live and show the output, including a cancellation and a deliberate worker crash with recovery.

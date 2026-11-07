@@ -61,6 +61,9 @@ FOCUS = {
     'Supervisor/RecyclePolicy.php': 'SupervisorValues',
     'Supervisor/WorkerDefinition.php': 'SupervisorValues',
     'Supervisor/Internal/ProcessMemory.php': 'SupervisorValues',
+    'Worker/WorkerArguments.php': 'WorkerArguments|WorkerRuntime',
+    'Worker/WorkerRuntime.php': 'WorkerRuntime|ProcessOrphan|ProcessSpawner',
+    'Process/InheritedChannel.php': 'InheritedChannel|WorkerRuntime',
     'Core/Kernel.php': 'Kernel',
     'Async/BackgroundTasks.php': 'BackgroundTasks',
 }

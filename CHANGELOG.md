@@ -8,6 +8,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - Renamed the project from the code name niphy to Raphp (namespace `Raphp\`, `libraphp`, `raphp.json`, `RAPHP_*` variables, CLI `rlm`). Spike code under `spikes/` keeps the old names.
 
 ### Added
+- Worker entry (step P2.11): a strict worker command line and a runtime that protects the worker from outliving its master, leaves Ctrl-C to the master, serves calls and ends with a meaningful exit code.
 - Supervisor (step P2.10): declared workers and pools, restart with growing waits and a degraded state, killing and restarting a worker that stops answering pings, routing (round-robin, least-busy), recycling by call count or memory, ordered graceful shutdown, and PSR-14 events for every change.
 - Process spawner (step P2.9): starts worker processes with a close-on-exec channel, drains and logs their output, collects their exit status without leaving zombies, and makes sure they cannot outlive their master.
 - Attribute handlers (step P2.8): `#[RpcMethod]` and `#[Idempotent]`, a method catalog read from the attributes, handlers registered from a container with parameters filled by name and type, and a retry middleware that repeats only idempotent methods.

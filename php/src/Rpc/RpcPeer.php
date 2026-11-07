@@ -329,6 +329,14 @@ final class RpcPeer
     }
 
     /**
+     * Why the connection ended: the error calls were failed with. Null while it is open.
+     */
+    public function closedBecause(): ?RpcException
+    {
+        return $this->closedBecause;
+    }
+
+    /**
      * Waits until the connection is closed and every request being handled has finished.
      */
     public function awaitClosed(?Cancellation $cancellation = null): void

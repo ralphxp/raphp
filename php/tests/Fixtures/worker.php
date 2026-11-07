@@ -7,7 +7,7 @@
  * Test-only flags: --fail-start (exit at once), --hang-start (start, never say hello), --marker=<file> (leave that file behind when SIGTERM arrives), --no-pdeathsig (do not ask the kernel for a signal when the master dies) and
  * --ignore-eof (stay alive when the channel closes, so only a signal can end the worker).
  *
- * It answers these methods: die, sleep, bloat, argv, env, cwd, stdin, raw, pid, ppid, echo, fds, say, flood, exit, busy, handler-term,
+ * It answers these methods: spin, die, sleep, bloat, argv, env, cwd, stdin, raw, pid, ppid, echo, fds, say, flood, exit, busy, handler-term,
  * ignore-term, fork-holder. A timer of 40 seconds ends it whatever happens, so a failed test
  * never leaves a stray process behind.
  */
@@ -19,17 +19,11 @@ use Amp\Cancellation;
 use function Amp\delay;
 
 use Psr\Log\NullLogger;
-use Raphp\Ipc\Codec\JsonLineCodec;
-use Raphp\Ipc\Message\EnvelopeReader;
-use Raphp\Ipc\Message\Hello;
-use Raphp\Ipc\Protocol;
-use Raphp\Process\InheritedChannel;
-use Raphp\Process\OrphanGuard;
 use Raphp\Rpc\HandlerRegistry;
-use Raphp\Rpc\RpcPeer;
 use Raphp\Rpc\RpcPeerOptions;
 use Raphp\Rpc\RpcRequest;
-use Raphp\Runtime\Libc\ParentDeathSignal;
+use Raphp\Worker\WorkerArguments;
+use Raphp\Worker\WorkerRuntime;
 use Revolt\EventLoop;
 
 require __DIR__ . '/../../../vendor/autoload.php';
@@ -52,18 +46,23 @@ function currentPid(): int
 
 pcntl_alarm(40);
 
-$options = [];
-foreach (array_slice($argv ?? [], 1) as $argument) {
-    if (str_starts_with($argument, '--')) {
-        $parts = explode('=', substr($argument, 2), 2);
-        $options[$parts[0]] = $parts[1] ?? '1';
-    }
+try {
+    $arguments = WorkerArguments::parse($argv ?? []);
+} catch (\InvalidArgumentException $exception) {
+    fwrite(STDERR, $exception->getMessage() . "\n");
+
+    exit(2);
 }
 
-$name = $options['name'] ?? 'worker';
-$guard = new OrphanGuard(isset($options['no-pdeathsig']) ? null : new ParentDeathSignal());
-if (!$guard->protect((int) ($options['parent-pid'] ?? 0))) {
-    exit(OrphanGuard::EXIT_PARENT_MISMATCH);
+$options = $arguments->options;
+$name = $arguments->name;
+
+if (isset($options['fail-start'])) {
+    exit(5); // a worker that cannot start, for the restart tests
+}
+
+if (isset($options['hang-start'])) {
+    sleep(30); // a worker that starts but never says hello (the 40 second alarm ends it anyway)
 }
 
 if (isset($options['marker'])) {
@@ -73,14 +72,6 @@ if (isset($options['marker'])) {
 
         exit(0);
     });
-}
-
-if (isset($options['fail-start'])) {
-    exit(5); // a worker that cannot start, for the restart tests
-}
-
-if (isset($options['hang-start'])) {
-    sleep(30); // a worker that starts but never says hello (the 40 second alarm ends it anyway)
 }
 
 $handlers = new HandlerRegistry();
@@ -187,6 +178,16 @@ $handlers->register('busy', static function (): string {
 
     return 'busy';
 });
+$handlers->register('spin', static function (): string {
+    // Busy, with no signal handler installed at all: the default SIGTERM action must still end it.
+    EventLoop::delay(0.05, static function (): void {
+        for ($spin = 0; $spin >= 0; $spin = ($spin + 1) % PHP_INT_MAX) {
+            // never returns to the loop
+        }
+    });
+
+    return 'spinning';
+});
 $handlers->register('handler-term', static function (): string {
     EventLoop::onSignal(SIGTERM, static function (): never {
         exit(0);
@@ -209,20 +210,11 @@ $handlers->register('fork-holder', static function (): int {
     return $child;
 });
 
-$peer = new RpcPeer(
-    (new InheritedChannel())->open(),
-    new JsonLineCodec(),
-    new EnvelopeReader(),
-    new NullLogger(),
-    $handlers,
-    options: new RpcPeerOptions(),
-    hello: new Hello(Protocol::VERSION, 'worker', $name, currentPid()),
-);
-$peer->start();
-$peer->awaitClosed();
+$handshakeTimeout = (float) ($options['handshake-timeout'] ?? 10.0);
+$exitCode = (new WorkerRuntime(new NullLogger(), new RpcPeerOptions(handshakeTimeout: $handshakeTimeout)))->run($arguments, $handlers);
 
 if (isset($options['ignore-eof'])) {
     delay(3600.0); // only a signal (or the 40 second alarm) ends the worker
 }
 
-exit(0);
+exit($exitCode);
