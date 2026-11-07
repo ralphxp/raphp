@@ -194,6 +194,15 @@ Total time for the same rows (hot tmpfs): `openRead()` at the default slice 17.7
 - **`read()` is not a good way to read a large file.** Putting the chunks together into one string is a single copy plus fresh memory pages that cannot be spread over turns of the loop: it took 120 to 230 ms for 32 MiB (three to six times the built-in) and still stalled the loop for 50 to 90 ms at the end, as long as or longer than the built-in's own stall. The chunk size makes no difference (65,536 bytes to 32 MiB: 99 to 113 ms). It needs twice the file's size in memory (a 64 MiB file ran out of the 128M `memory_limit`). It is fine for small files; large ones belong to `openRead()`. This is why `Filesystem::read()` says so in its documentation (F52).
 - A single `fread()` of one chunk can still block as long as the disk takes to return it. A slow or remote disk stalls the loop for that long.
 
+## Line splitting (P2B.3: `php tools/bench/lines.php`)
+
+| | `LineBuffer` | Amp `splitLines()` |
+|---|---|---|
+| 16 MB without a newline, 4 KiB chunks | **46 ms** | **2,926 ms** (about 64 times slower) |
+| Ordinary text: 195,000 lines in 64 KiB chunks | 34.5 ms | 41.5 ms |
+
+Amp's splitter explodes the whole buffer again for every chunk, so a long line costs time in proportion to its square, and it has no limit on the length of a line. `LineBuffer` scans each chunk once and refuses a line over its limit (F54). On ordinary text the two are equal. The first version of `LineBuffer` (a loop of `strpos`) was 1.6 times slower than Amp on ordinary text (55 ms against 34 ms); switching to `explode()` fixed that.
+
 ## How much to trust this
 
 - **One machine, a loaded desktop.** Two full runs (the first before G and L were added) gave speeds that differ by up to 30% (the soak: 4,808 and 5,918 calls/s; 64 in flight: 24,145 and 17,511 calls/s), while the steady-state memory numbers agreed within 0.3 MiB (the burst peaks within 2 to 4 MiB). Use the speeds as a rough scale only.
