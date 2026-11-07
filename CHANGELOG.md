@@ -11,6 +11,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - Renamed the project from the code name niphy to Raphp (namespace `Raphp\`, `libraphp`, `raphp.json`, `RAPHP_*` variables, CLI `rlm`). Spike code under `spikes/` keeps the old names.
 
 ### Added
+- Process runner (step P2B.2): `ProcessRunner` runs application commands without a shell, captures or streams their output, and stops a command together with everything it started on cancellation, timeout or output limit.
 - Filesystem service (step P2B.1): a `Filesystem` interface with a cooperative default that reads, writes, lists and streams files in chunks while the event loop keeps running, and a benchmark of how long the loop stalls.
 - Soak and performance baseline (step P2.13): `tools/bench/bench.php` (`make bench`) and `docs/BENCHMARKS.md`, with a soak of 50,000 round trips, a memory tolerance and plateau check, payloads up to the 8 MiB limit, and start-up times.
 - Headless example (step P2.12): `examples/headless-worker`, a command-line master calling a worker with progress, Ctrl-C cancellation and recovery from a crashed worker, with tests that run it for real.

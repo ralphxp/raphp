@@ -30,6 +30,12 @@ parameters:
 
   # Forbidden calls. These ban by function name: whether the rule can tell a string
   # proc_open() argument from an array one is unverified (plan P1.3).
+  disallowedStaticCalls:
+    -
+      method: 'Amp\Process\Process::start()'
+      message: 'Application commands run through ProcessRunner (FRAMEWORK 5.1): it gives each command its own process group, bounds its output and stops it cleanly. Workers go through ProcessSpawner (D18).'
+      allowIn:
+        - php/src/Process/ProcessRunner.php
   disallowedFunctionCalls:
     -
       function: 'proc_open()'

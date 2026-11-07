@@ -19,6 +19,7 @@
     "amphp/amp": "^3",
     "amphp/byte-stream": "^2",
     "amphp/pipeline": "^1",
+    "amphp/process": "^2",
     "monolog/monolog": "^3.12",
     "php-di/php-di": "^7.1",
     "psr/clock": "^1.0",
