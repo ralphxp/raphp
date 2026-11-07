@@ -9,6 +9,7 @@ parameters:
   paths:
     - php/src
     - php/tests
+    - examples
   tmpDir: .phpstan.cache
   checkTooWideReturnTypesInProtectedAndPublicMethods: true
   checkUninitializedProperties: true

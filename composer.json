@@ -34,7 +34,8 @@
   },
   "autoload-dev": {
     "psr-4": {
-      "Raphp\\Tests\\": "php/tests/"
+      "Raphp\\Tests\\": "php/tests/",
+      "Raphp\\Examples\\HeadlessWorker\\": "examples/headless-worker/src/"
     }
   },
   "config": {

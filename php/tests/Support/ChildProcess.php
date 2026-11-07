@@ -14,7 +14,7 @@ use RuntimeException;
  * only reason PHPStan lets test support code call proc_open() (see phpstan.neon). The real
  * worker spawner is a different class (P2.9).
  *
- * The child signals that it is ready by printing a line "READY". After that, the signals in
+ * The child signals that it is ready by printing a line "READY" (or the marker given to run()). After that, the signals in
  * `$signalsAfterReady` are sent one by one, 200 ms apart.
  */
 final class ChildProcess
@@ -22,8 +22,9 @@ final class ChildProcess
     /**
      * @param list<string> $arguments
      * @param list<int> $signalsAfterReady
+     * @param string $readyMarker the text on the child's stdout that means "ready"
      */
-    public function run(string $script, array $arguments = [], array $signalsAfterReady = [], float $timeout = 15.0): ChildResult
+    public function run(string $script, array $arguments = [], array $signalsAfterReady = [], float $timeout = 15.0, string $readyMarker = "READY\n"): ChildResult
     {
         $process = proc_open(
             [PHP_BINARY, '-d', 'display_errors=stderr', '-d', 'error_reporting=-1', $script, ...$arguments],
@@ -66,7 +67,7 @@ final class ChildProcess
             }
 
             $now = hrtime(true) / 1e9;
-            if (!$ready && str_contains($stdout, "READY\n")) {
+            if (!$ready && str_contains($stdout, $readyMarker)) {
                 $ready = true;
                 $nextSignalAt = $now + 0.1;
             }

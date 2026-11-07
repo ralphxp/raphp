@@ -325,6 +325,8 @@ Depends on your hosting answer. Runs `make check` on PHP 8.5 (the floor, D23), p
 - `examples/headless-worker`: a CLI app calling a worker with progress and cancellation (Ctrl-C cancels).
 **Done when:** I run it live and show the output, including a cancellation and a deliberate worker crash with recovery.
 
+**Result (2026-11-07):** passes, run live. `examples/headless-worker` (`main.php` with `demo`, `job` and `crash`; `worker.php`; `src/{Application, ConsoleEvents, ReportService}.php`; a README) uses only public framework pieces. Live output: a 10-step job with progress; a job cancelled half way (the worker's own log shows it stopped during step 11); a worker that kills itself with SIGKILL during a call (`E_WORKER_CRASHED`, `crashed ... killed by signal 9`, restart after 0.2 s, a new pid answers); a job on the new worker; ordered stop. A real Ctrl-C (SIGINT to the whole process group) cancelled the job, the worker ignored it and left on `bye`, and the master exited with 130 and no stray process. Running it found one bug of mine in the example (fixed). `HeadlessWorkerExampleTest` (4 tests, slow group) runs it for real; breaking the Ctrl-C wiring makes it fail. `make check`: 1,125 tests. No mutation run, as there is no new framework code.
+
 ### P2.13 Soak and performance baseline. Size S
 - Script that runs 10k+ round trips and a large-payload test, recording RSS (from `/proc/self/statm`) and `memory_get_usage(true)` on both sides. Results go in `docs/BENCHMARKS.md`. This step covers the headless master only.
 **Done when:** no memory growth beyond a stated tolerance, and numbers are recorded with the machine description.
