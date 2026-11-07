@@ -60,6 +60,7 @@ final class ShimAbiTest extends TestCase
         self::assertSame(0, $ffi->RAPHP_STATUS_OK);
         self::assertSame(-2, $ffi->RAPHP_STATUS_POISONED);
         self::assertSame(-3, $ffi->RAPHP_STATUS_PANICKED);
+        self::assertSame(-6, $ffi->RAPHP_STATUS_BUFFER_TOO_SMALL);
     }
 
     public function testTheAbiVersionIsMajorThenMinor(): void
@@ -68,7 +69,7 @@ final class ShimAbiTest extends TestCase
         self::assertIsInt($version);
 
         self::assertSame(0, $version >> 16, 'major');
-        self::assertSame(1, $version & 0xFFFF, 'minor');
+        self::assertSame(2, $version & 0xFFFF, 'minor');
     }
 
     public function testTheShimStartsAcceptsAnEmptyBatchAndShutsDown(): void
@@ -132,6 +133,124 @@ final class ShimAbiTest extends TestCase
         self::assertGreaterThan(10, $full);
         self::assertSame($full, $reported, 'the full length is returned so PHP can ask again');
         self::assertSame(10, strlen(FFI::string($small, 10)));
+        $ffi->raphp_shutdown($shim);
+    }
+
+    /**
+     * Waits, the way the master's loop will, for the event descriptor to become readable, and clears it.
+     */
+    private function waitForWakeUp(FFI $ffi, mixed $shim): bool
+    {
+        $fd = $ffi->raphp_event_fd($shim);
+        self::assertIsInt($fd);
+        self::assertGreaterThanOrEqual(0, $fd);
+        $stream = fopen("php://fd/{$fd}", 'r');
+        self::assertNotFalse($stream);
+        $read = [$stream];
+        $write = null;
+        $except = null;
+        $ready = stream_select($read, $write, $except, 2);
+        if ($ready === 1) {
+            fread($stream, 8); // clear first ...
+        }
+
+        fclose($stream);
+
+        return $ready === 1;
+    }
+
+    /**
+     * Drains with a buffer of `$capacity` bytes the way PHP must: growing it when an event does not fit.
+     *
+     * @return list<string>
+     */
+    private function drain(FFI $ffi, mixed $shim, int $capacity): array
+    {
+        $lines = [];
+        $buffer = $ffi->new("char[{$capacity}]");
+        while (true) {
+            $result = $ffi->raphp_poll($shim, $buffer, $capacity);
+            self::assertIsInt($result);
+            if ($result === 0) {
+                return $lines;
+            }
+
+            if ($result === $ffi->RAPHP_STATUS_BUFFER_TOO_SMALL) {
+                $needed = $ffi->raphp_next_event_size($shim);
+                self::assertIsInt($needed);
+                self::assertGreaterThan($capacity, $needed);
+                $capacity = $needed;
+                $buffer = $ffi->new("char[{$capacity}]");
+
+                continue;
+            }
+
+            if ($result < 1) {
+                self::fail("raphp_poll returned the status {$result}");
+            }
+
+            array_push($lines, ...explode("\n", rtrim(FFI::string($buffer, $result), "\n")));
+        }
+    }
+
+    public function testAnEventWakesTheLoopAndIsReadWithPoll(): void
+    {
+        $ffi = $this->ffi();
+        $shim = $ffi->raphp_init('', 0);
+        $command = '#emit {"type":"hello","n":1}';
+
+        self::assertSame(0, $ffi->raphp_send($shim, $command, strlen($command)));
+
+        self::assertTrue($this->waitForWakeUp($ffi, $shim), 'the descriptor became readable');
+        self::assertSame(['{"type":"hello","n":1}'], $this->drain($ffi, $shim, 4096));
+        self::assertSame([], $this->drain($ffi, $shim, 4096), 'then nothing');
+        $ffi->raphp_shutdown($shim);
+    }
+
+    public function testALargeEventThatDoesNotFitIsNotLostAndDoesNotBlockTheNextOne(): void
+    {
+        $ffi = $this->ffi();
+        $shim = $ffi->raphp_init('', 0);
+        $big = '#emit-large 100000';
+        $after = '#emit {"type":"after"}';
+        $ffi->raphp_send($shim, $big, strlen($big));
+        $ffi->raphp_send($shim, $after, strlen($after));
+
+        $lines = $this->drain($ffi, $shim, 1024); // too small for the first event: drain() grows the buffer
+
+        self::assertCount(2, $lines);
+        self::assertStringContainsString('"type":"large"', $lines[0]);
+        self::assertSame('{"type":"after"}', $lines[1], 'the event behind the large one arrived');
+        $ffi->raphp_shutdown($shim);
+    }
+
+    public function testTheLargestEventTheShimQueuesFitsAPollBufferOfTheAdvertisedSize(): void
+    {
+        $ffi = $this->ffi();
+        $limit = $ffi->raphp_max_event_bytes();
+        self::assertSame(1_048_576, $limit);
+        $shim = $ffi->raphp_init('', 0);
+        $command = "#emit-report {$limit}";
+
+        $ffi->raphp_send($shim, $command, strlen($command));
+        $lines = $this->drain($ffi, $shim, 4096);
+
+        self::assertCount(1, $lines);
+        self::assertStringStartsWith('{"type":"event.too_large","event":"large"', $lines[0]);
+        $ffi->raphp_shutdown($shim);
+    }
+
+    public function testAFailureIsDeliveredAsALastEventAndTheLoopIsWokenByIt(): void
+    {
+        $ffi = $this->ffi();
+        $shim = $ffi->raphp_init('', 0);
+        $poison = '#poison the window system failed';
+
+        $ffi->raphp_send($shim, $poison, strlen($poison));
+
+        self::assertTrue($this->waitForWakeUp($ffi, $shim), 'PHP is woken by the failure and need not wait for its next call');
+        self::assertSame(-2, $ffi->raphp_send($shim, '[]', 2));
+        self::assertSame(['{"type":"shim.failed","reason":"the window system failed"}'], $this->drain($ffi, $shim, 4096), 'poll still works on a poisoned shim');
         $ffi->raphp_shutdown($shim);
     }
 }

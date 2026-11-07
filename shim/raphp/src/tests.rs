@@ -63,7 +63,7 @@ fn the_abi_version_is_major_then_minor() {
     let version = raphp_abi_version();
 
     assert_eq!(version >> 16, 0, "major");
-    assert_eq!(version & 0xffff, 1, "minor");
+    assert_eq!(version & 0xffff, 2, "minor");
 }
 
 #[test]
@@ -383,14 +383,16 @@ fn every_exported_function_runs_under_catch_unwind() {
         let end = rest.find("\n}\n").expect("a function body ends");
         let body = &rest[..end];
         assert!(
-            body.contains("catch_unwind") || body.contains("guarded("),
+            body.contains("catch_unwind")
+                || body.contains("guarded(")
+                || body.contains("guarded_allow_poisoned("),
             "an exported function is not guarded:\n{body}"
         );
         exported += 1;
     }
 
     assert_eq!(
-        exported, 5,
+        exported, 9,
         "the list of exported functions changed: update the header test and the contract"
     );
 }

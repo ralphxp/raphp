@@ -3,10 +3,11 @@
 //! buffer it passes in, and the shim never hands out an allocation (FRAMEWORK 7.3).
 
 use std::cell::RefCell;
-use std::ffi::c_char;
+use std::ffi::{c_char, c_int};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
+use crate::events::{MAX_EVENT_BYTES, Polled};
 use crate::shim::{DEFAULT_SHUTDOWN_TIMEOUT, RaphpShim, Shim, idle_ui_body};
 use crate::status::{RaphpStatus, ShimError};
 use crate::ui_thread::panic_message;
@@ -14,7 +15,7 @@ use crate::ui_thread::panic_message;
 /// The ABI version: major in the high 16 bits, minor in the low 16. A minor bump adds functions; a major
 /// bump breaks. Version 0.x is not stable.
 const ABI_MAJOR: u32 = 0;
-const ABI_MINOR: u32 = 1;
+const ABI_MINOR: u32 = 2;
 
 thread_local! {
     /// The reason the last call failed when there is no handle to keep it on (a failed `raphp_init`).
@@ -58,24 +59,45 @@ pub(crate) fn guarded(
     shim: *const RaphpShim,
     call: impl FnOnce(&Shim) -> Result<(), ShimError>,
 ) -> RaphpStatus {
+    match run_guarded(shim, false, |shim| call(shim).map(|()| 0)) {
+        Ok(_) => RaphpStatus::Ok,
+        Err(status) => status,
+    }
+}
+
+/// The same for functions that must keep working on a poisoned shim, because what they give is the way
+/// to learn what happened: reading the events (including the last one, `shim.failed`) and their size.
+/// Returns the call's number, or the status that stopped it.
+pub(crate) fn guarded_allow_poisoned(
+    shim: *const RaphpShim,
+    call: impl FnOnce(&Shim) -> Result<isize, ShimError>,
+) -> Result<isize, RaphpStatus> {
+    run_guarded(shim, true, call)
+}
+
+fn run_guarded(
+    shim: *const RaphpShim,
+    allow_poisoned: bool,
+    call: impl FnOnce(&Shim) -> Result<isize, ShimError>,
+) -> Result<isize, RaphpStatus> {
     // SAFETY: PHP passes a pointer from `raphp_init` that it has not shut down (the PHP wrapper enforces it).
     let Some(handle) = (unsafe { shim.as_ref() }) else {
         set_no_handle_error("the shim handle is null");
 
-        return RaphpStatus::InvalidArgument;
+        return Err(RaphpStatus::InvalidArgument);
     };
     let shim = &handle.shim;
 
-    if shim.health.is_poisoned() {
-        return RaphpStatus::Poisoned;
+    if !allow_poisoned && shim.health.is_poisoned() {
+        return Err(RaphpStatus::Poisoned);
     }
 
     match catch_unwind(AssertUnwindSafe(|| call(shim))) {
-        Ok(Ok(())) => RaphpStatus::Ok,
+        Ok(Ok(number)) => Ok(number),
         Ok(Err(error)) => {
             shim.health.set_error(error.message);
 
-            error.status
+            Err(error.status)
         }
         Err(payload) => {
             shim.health.poison(format!(
@@ -83,7 +105,7 @@ pub(crate) fn guarded(
                 panic_message(&*payload)
             ));
 
-            RaphpStatus::Panicked
+            Err(RaphpStatus::Panicked)
         }
     }
 }
@@ -202,4 +224,79 @@ pub unsafe extern "C" fn raphp_shutdown(shim: *mut RaphpShim) -> RaphpStatus {
     let handle = unsafe { Box::from_raw(shim) };
 
     catch_unwind(AssertUnwindSafe(|| handle.shim.stop())).unwrap_or(RaphpStatus::Panicked)
+}
+
+/// The descriptor that becomes readable when events are queued. It belongs to the shim (close-on-exec, valid
+/// until `raphp_shutdown`): PHP watches it and never closes it. **Clear it first** (read 8 bytes), **then
+/// drain with `raphp_poll` until it returns 0**: that order cannot lose a wake-up. Returns -1 for a null
+/// handle. Works on a poisoned shim.
+///
+/// # Safety
+/// `shim` must come from `raphp_init` and not have been shut down.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn raphp_event_fd(shim: *const RaphpShim) -> c_int {
+    match guarded_allow_poisoned(shim, |shim| Ok(shim.events.wake_fd() as isize)) {
+        Ok(fd) => fd as c_int,
+        Err(_) => -1,
+    }
+}
+
+/// Copies whole events (one JSON line each, every line ending in `\n`) into `out`, as many as fit, in order.
+/// Returns the bytes written; `0` when nothing is queued; `RAPHP_STATUS_BUFFER_TOO_SMALL` when the **next**
+/// event is larger than `cap`: then nothing was copied, the event stays at the head of the queue (later
+/// events never overtake it), the wake-up is raised again, and `raphp_next_event_size` says how large a
+/// buffer it needs. Any other negative value is a `RaphpStatus`. Works on a poisoned shim, so the last
+/// event (`shim.failed`) can be read.
+///
+/// # Safety
+/// `out` must point to `cap` writable bytes (it may be null when `cap` is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn raphp_poll(shim: *const RaphpShim, out: *mut c_char, cap: usize) -> isize {
+    let result = guarded_allow_poisoned(shim, |shim| {
+        if out.is_null() && cap > 0 {
+            return Err(ShimError::invalid(
+                "the output buffer is null but its capacity is not 0",
+            ));
+        }
+
+        let mut empty = [0u8; 0];
+        let buffer: &mut [u8] = if cap == 0 {
+            &mut empty
+        } else {
+            // SAFETY: the caller guarantees `cap` writable bytes at `out`.
+            unsafe { std::slice::from_raw_parts_mut(out.cast::<u8>(), cap) }
+        };
+
+        match shim.events.poll(buffer) {
+            Polled::Empty => Ok(0),
+            Polled::Written(bytes) => Ok(isize::try_from(bytes).unwrap_or(isize::MAX)),
+            Polled::TooSmall(_) => Ok(RaphpStatus::BufferTooSmall as isize),
+        }
+    });
+
+    match result {
+        Ok(number) => number,
+        Err(status) => status as isize,
+    }
+}
+
+/// The size in bytes, newline included, of the event at the head of the queue; 0 when it is empty or the
+/// handle is null. After `RAPHP_STATUS_BUFFER_TOO_SMALL` this is the buffer size to poll with. Works on a
+/// poisoned shim.
+///
+/// # Safety
+/// `shim` must come from `raphp_init` and not have been shut down.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn raphp_next_event_size(shim: *const RaphpShim) -> usize {
+    guarded_allow_poisoned(shim, |shim| {
+        Ok(isize::try_from(shim.events.next_event_size()).unwrap_or(isize::MAX))
+    })
+    .map_or(0, |size| usize::try_from(size).unwrap_or(0))
+}
+
+/// The largest single event the shim will queue, newline included. A larger one is replaced by a small
+/// `event.too_large` event, so a poll buffer of this size can never be too small.
+#[unsafe(no_mangle)]
+pub extern "C" fn raphp_max_event_bytes() -> usize {
+    catch_unwind(|| MAX_EVENT_BYTES).unwrap_or(0)
 }

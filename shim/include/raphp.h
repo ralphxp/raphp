@@ -32,6 +32,11 @@ enum RaphpStatus
    The UI thread did not stop within the time allowed, and was left to end with the process.
    */
   RAPHP_STATUS_TIMED_OUT = -5,
+  /*
+   `raphp_poll`: the next event is larger than the buffer. It stays queued; `raphp_next_event_size` says
+   how large a buffer it needs.
+   */
+  RAPHP_STATUS_BUFFER_TOO_SMALL = -6,
 };
 typedef int32_t RaphpStatus;
 
@@ -86,3 +91,45 @@ size_t raphp_last_error(const RaphpShim *shim,
  `shim` must come from `raphp_init` and not have been shut down.
  */
 RaphpStatus raphp_shutdown(RaphpShim *shim);
+
+/*
+ The descriptor that becomes readable when events are queued. It belongs to the shim (close-on-exec, valid
+ until `raphp_shutdown`): PHP watches it and never closes it. **Clear it first** (read 8 bytes), **then
+ drain with `raphp_poll` until it returns 0**: that order cannot lose a wake-up. Returns -1 for a null
+ handle. Works on a poisoned shim.
+
+ # Safety
+ `shim` must come from `raphp_init` and not have been shut down.
+ */
+int raphp_event_fd(const RaphpShim *shim);
+
+/*
+ Copies whole events (one JSON line each, every line ending in `\n`) into `out`, as many as fit, in order.
+ Returns the bytes written; `0` when nothing is queued; `RAPHP_STATUS_BUFFER_TOO_SMALL` when the **next**
+ event is larger than `cap`: then nothing was copied, the event stays at the head of the queue (later
+ events never overtake it), the wake-up is raised again, and `raphp_next_event_size` says how large a
+ buffer it needs. Any other negative value is a `RaphpStatus`. Works on a poisoned shim, so the last
+ event (`shim.failed`) can be read.
+
+ # Safety
+ `out` must point to `cap` writable bytes (it may be null when `cap` is 0).
+ */
+ptrdiff_t raphp_poll(const RaphpShim *shim,
+                     char *out,
+                     size_t cap);
+
+/*
+ The size in bytes, newline included, of the event at the head of the queue; 0 when it is empty or the
+ handle is null. After `RAPHP_STATUS_BUFFER_TOO_SMALL` this is the buffer size to poll with. Works on a
+ poisoned shim.
+
+ # Safety
+ `shim` must come from `raphp_init` and not have been shut down.
+ */
+size_t raphp_next_event_size(const RaphpShim *shim);
+
+/*
+ The largest single event the shim will queue, newline included. A larger one is replaced by a small
+ `event.too_large` event, so a poll buffer of this size can never be too small.
+ */
+size_t raphp_max_event_bytes(void);

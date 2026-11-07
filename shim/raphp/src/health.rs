@@ -1,12 +1,15 @@
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+
+type PoisonHook = Box<dyn Fn(&str) + Send + Sync>;
 
 /// Whether the shim still works, and the last reason it did not. Shared between the threads that call
 /// into the shim and the UI thread.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct Health {
     poisoned: AtomicBool,
     error: Mutex<String>,
+    on_poison: OnceLock<PoisonHook>,
 }
 
 impl Health {
@@ -21,10 +24,26 @@ impl Health {
 
     /// Marks the shim as failed for good. The first cause is kept: later failures are consequences.
     pub fn poison(&self, message: impl Into<String>) {
-        let mut error = self.lock();
-        if !self.poisoned.swap(true, Ordering::SeqCst) {
-            *error = message.into();
+        let first = {
+            let mut error = self.lock();
+            if self.poisoned.swap(true, Ordering::SeqCst) {
+                None
+            } else {
+                *error = message.into();
+
+                Some(error.clone())
+            }
+        };
+
+        // Told once, outside the lock, and only about the first cause.
+        if let (Some(cause), Some(hook)) = (first, self.on_poison.get()) {
+            hook(&cause);
         }
+    }
+
+    /// Registers what to do when the shim is poisoned (queue a last event for PHP). Once only.
+    pub fn on_poison(&self, hook: impl Fn(&str) + Send + Sync + 'static) {
+        let _ = self.on_poison.set(Box::new(hook));
     }
 
     pub fn error(&self) -> String {

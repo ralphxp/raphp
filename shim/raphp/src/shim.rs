@@ -2,6 +2,7 @@ use std::io;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use crate::events::EventQueue;
 use crate::health::Health;
 use crate::status::{RaphpStatus, ShimError};
 use crate::ui_thread::{StopOutcome, StopSignal, UiThread};
@@ -16,6 +17,7 @@ pub struct RaphpShim {
 
 pub(crate) struct Shim {
     pub health: Arc<Health>,
+    pub events: Arc<EventQueue>,
     ui: Mutex<Option<UiThread>>,
     shutdown_timeout: Duration,
 }
@@ -27,11 +29,27 @@ impl Shim {
     where
         F: FnOnce(Arc<StopSignal>) + Send + 'static,
     {
+        Self::start_with_events(Arc::new(EventQueue::new()?), shutdown_timeout, body)
+    }
+
+    /// The same, with an event queue chosen by the caller (the tests use small limits).
+    pub fn start_with_events<F>(
+        events: Arc<EventQueue>,
+        shutdown_timeout: Duration,
+        body: F,
+    ) -> io::Result<Self>
+    where
+        F: FnOnce(Arc<StopSignal>) + Send + 'static,
+    {
         let health = Arc::new(Health::default());
+        // When the shim fails, PHP must hear of it through the events and not only at its next call.
+        let queue = events.clone();
+        health.on_poison(move |cause| queue.fail(cause));
         let ui = UiThread::spawn(health.clone(), body)?;
 
         Ok(Self {
             health,
+            events,
             ui: Mutex::new(Some(ui)),
             shutdown_timeout,
         })
@@ -40,8 +58,8 @@ impl Shim {
     /// Runs a batch of commands. Until the command model exists (P3.3) only the empty batch is accepted.
     pub fn send(&self, batch: &str) -> Result<(), ShimError> {
         #[cfg(any(test, feature = "test-hooks"))]
-        if batch == "#panic" {
-            panic!("a command panicked on purpose");
+        if let Some(result) = self.test_command(batch) {
+            return result;
         }
 
         if batch.trim() == "[]" {
@@ -54,9 +72,63 @@ impl Shim {
         ))
     }
 
+    /// Commands that exist only in test builds, so that the tests can make the shim do things the UI thread
+    /// will do for real later: `#panic`, `#emit <json>`, `#emit-c <window> <kind> <json>`,
+    /// `#emit-large <bytes>`, `#emit-report <bytes>`, `#poison <reason>`.
+    #[cfg(any(test, feature = "test-hooks"))]
+    fn test_command(&self, batch: &str) -> Option<Result<(), ShimError>> {
+        use crate::events::{ContinuousKind, Event, PushError};
+
+        let rest = batch.strip_prefix('#')?;
+        let (name, arguments) = rest.split_once(' ').unwrap_or((rest, ""));
+        let pushed = |result: Result<(), PushError>| {
+            result
+                .map_err(|error| ShimError::invalid(format!("the event was not queued: {error:?}")))
+        };
+
+        Some(match name {
+            "panic" => panic!("a command panicked on purpose"),
+            "emit" => pushed(self.events.push(Event::discrete(arguments))),
+            "emit-c" => {
+                let mut parts = arguments.splitn(3, ' ');
+                let window: u64 = parts.next().and_then(|text| text.parse().ok()).unwrap_or(0);
+                let kind = match parts.next() {
+                    Some("pointer_move") => ContinuousKind::PointerMove,
+                    Some("scroll") => ContinuousKind::Scroll,
+                    _ => ContinuousKind::Resize,
+                };
+                pushed(self.events.push(Event::continuous(
+                    window,
+                    kind,
+                    parts.next().unwrap_or(""),
+                )))
+            }
+            "emit-large" | "emit-report" => {
+                let bytes: usize = arguments.parse().unwrap_or(0);
+                let event = Event::discrete(format!(
+                    "{{\"type\":\"large\",\"pad\":\"{}\"}}",
+                    "x".repeat(bytes)
+                ));
+                if name == "emit-large" {
+                    pushed(self.events.push(event))
+                } else {
+                    pushed(self.events.push_or_report(event, "large").map(|_| ()))
+                }
+            }
+            "poison" => {
+                self.health.poison(arguments);
+
+                Ok(())
+            }
+            _ => return None,
+        })
+    }
+
     /// Stops the UI thread, waiting a bounded time. Safe to call on a poisoned shim, whose UI thread has
     /// usually ended already.
     pub fn stop(&self) -> RaphpStatus {
+        // Wake any producer that is waiting for PHP to drain, so that it cannot hold up the shutdown.
+        self.events.close();
         let ui = self
             .ui
             .lock()

@@ -12,6 +12,7 @@ name = "raphp"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+libc = "0.2"
 
 [features]
 # Compiles in a command that panics, so the tests can prove a panic is contained. Never enabled in a build for PHP.

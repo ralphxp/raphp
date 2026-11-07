@@ -17,6 +17,9 @@ pub enum RaphpStatus {
     Unsupported = -4,
     /// The UI thread did not stop within the time allowed, and was left to end with the process.
     TimedOut = -5,
+    /// `raphp_poll`: the next event is larger than the buffer. It stays queued; `raphp_next_event_size` says
+    /// how large a buffer it needs.
+    BufferTooSmall = -6,
 }
 
 /// A failure with its reason, as the guarded calls produce it.
