@@ -23,7 +23,7 @@ final readonly class Event implements Envelope
         public array $params = [],
         public ?int $ref = null,
     ) {
-        Validation::notEmpty($method, '"method"');
+        Validation::method($method);
         Validation::params($params);
         if ($ref !== null) {
             Validation::positive($ref, '"ref"');

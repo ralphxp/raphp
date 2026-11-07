@@ -120,7 +120,7 @@ final class RpcPeer
         private readonly ?Closure $onEvent = null,
         private readonly ?Closure $onControl = null,
     ) {
-        $this->outbound = new OutboundQueue($options->outboundBuffer);
+        $this->outbound = new OutboundQueue($options->outboundBuffer, $options->outboundBuffer);
         $this->slots = new Slots($options->maxInFlight, $options->maxQueuedCalls);
         $this->tasks = new BackgroundTasks($logger);
         $this->finished = new DeferredFuture();
@@ -216,6 +216,9 @@ final class RpcPeer
             return RpcResponse::failure($this->unavailable());
         }
 
+        // Refuse a call that can never be valid before anything is taken for it (a slot, an id).
+        new Request(1, $request->method, $request->params, $request->trace);
+
         $timeout = $request->timeout === null ? null : new TimeoutCancellation($request->timeout, "the call to {$request->method} took longer than {$request->timeout} seconds");
         $combined = $this->combine($timeout, $cancellation);
 
@@ -225,7 +228,7 @@ final class RpcPeer
         } catch (CancelledException $exception) {
             return RpcResponse::failure($this->interrupted($request, $timeout, $cancellation, $exception));
         } catch (RpcException $exception) {
-            return RpcResponse::failure($exception);
+            return RpcResponse::failure($this->closedBecause ?? $exception);
         }
 
         $id = ++$this->nextId;
@@ -311,14 +314,25 @@ final class RpcPeer
     }
 
     /**
-     * Queues a message from the read loop or a cancel path, without ever waiting.
+     * Queues a message from the read loop or a cancel path, without ever waiting. These messages
+     * are bounded: past the queue's reserve the peer is not reading what is sent to it, and the
+     * connection is closed rather than let the queue grow.
+     *
+     * @param string|null $key a message with the same key that is still waiting makes this one redundant
      */
-    private function queueNow(Envelope $envelope): void
+    private function queueNow(Envelope $envelope, ?string $key = null): void
     {
         try {
-            $this->outbound->pushNow($this->codec->encode($envelope->toArray()));
+            $line = $this->codec->encode($envelope->toArray());
         } catch (RpcException $exception) {
             $this->logger->error('a message could not be encoded', ['kind' => $envelope->kind()->value, 'exception' => $exception]);
+
+            return;
+        }
+
+        if (!$this->outbound->pushNow($line, $key) && !$this->closed) {
+            $this->logger->warning('the peer does not read what is sent to it, closing the connection');
+            $this->closeBecause(new WorkerUnavailableException('the peer does not read what is sent to it'));
         }
     }
 
@@ -398,7 +412,7 @@ final class RpcPeer
         } elseif ($envelope instanceof Cancel) {
             $this->cancelInbound($envelope->ref);
         } elseif ($envelope instanceof Ping) {
-            $this->queueNow(new Pong());
+            $this->queueNow(new Pong(), 'pong');
         } elseif ($envelope instanceof Bye) {
             $this->closeBecause(new WorkerUnavailableException('the peer said bye' . ($envelope->reason === '' ? '' : ": {$envelope->reason}")));
         } elseif ($this->onControl !== null) {
@@ -504,15 +518,16 @@ final class RpcPeer
             $response = RpcResponse::failure(new InternalErrorException('internal error'));
         }
 
-        unset($this->inbound[$id]);
-        if ($this->closed) {
-            return;
-        }
-
+        // The request stays counted until its answer is in the outbound queue: a request whose
+        // handler is done but whose answer still waits for room is still holding memory.
         try {
-            $this->outbound->push($this->encodeResponse($id, $response));
+            if (!$this->closed) {
+                $this->outbound->push($this->encodeResponse($id, $response));
+            }
         } catch (RpcException) {
             // The connection closed while this answer waited for room; nobody is left to read it.
+        } finally {
+            unset($this->inbound[$id]);
         }
     }
 

@@ -15,6 +15,10 @@ use stdClass;
  */
 final class Validation
 {
+    public const int MAX_METHOD_BYTES = 256;
+
+    public const int MAX_TEXT_BYTES = 256;
+
     /**
      * @throws InvalidArgumentException
      */
@@ -36,6 +40,31 @@ final class Validation
     }
 
     /**
+     * A method name is looked up in a registry and echoed in errors and logs, so it is bounded.
+     *
+     * @throws InvalidArgumentException
+     */
+    public static function method(string $method): void
+    {
+        self::notEmpty($method, '"method"');
+        if (strlen($method) > self::MAX_METHOD_BYTES) {
+            throw new InvalidArgumentException('"method" must be at most ' . self::MAX_METHOD_BYTES . ' bytes');
+        }
+    }
+
+    /**
+     * Free text from a peer (a `bye` reason) ends up in log lines, so it is bounded.
+     *
+     * @throws InvalidArgumentException
+     */
+    public static function shortText(string $value, string $what): void
+    {
+        if (strlen($value) > self::MAX_TEXT_BYTES) {
+            throw new InvalidArgumentException("{$what} must be at most " . self::MAX_TEXT_BYTES . ' bytes');
+        }
+    }
+
+    /**
      * A trace id ends up in log lines, so it is kept to a safe alphabet and a short length.
      *
      * @throws InvalidArgumentException
@@ -49,7 +78,8 @@ final class Validation
 
     /**
      * Parameters are a JSON object. PHP reads an object whose keys are all digits as a list, and
-     * a JSON array as a list too, so a non-empty list is refused. Names start with a letter.
+     * a JSON array as a list too, so a non-empty list is refused. That means an object whose keys
+     * are all digits cannot be used as params; key names are otherwise free.
      *
      * @param array<array-key, mixed> $params
      *

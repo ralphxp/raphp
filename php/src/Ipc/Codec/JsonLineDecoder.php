@@ -35,12 +35,23 @@ final class JsonLineDecoder implements Decoder
 
     /**
      * @param positive-int $maxLineBytes
-     * @param positive-int $maxDepth
+     * @param positive-int $maxDepth how many levels of arrays and objects a message may nest, the message itself being level 1 (json_decode counts one more, so it is given maxDepth + 1)
+     * @param positive-int $maxContainers
      */
     public function __construct(
         private readonly int $maxLineBytes,
         private readonly int $maxDepth,
+        private readonly int $maxContainers,
     ) {}
+
+    /**
+     * How many arrays and objects a line may hold, counted as its `[` and `{` characters. It is an
+     * upper bound (brackets inside strings count too) and costs one pass over the line.
+     */
+    public static function containers(string $line): int
+    {
+        return substr_count($line, '[') + substr_count($line, '{');
+    }
 
     public function feed(string $bytes): void
     {
@@ -100,8 +111,12 @@ final class JsonLineDecoder implements Decoder
             return new ProtocolException('a message must be a JSON object, so a line must start with "{"');
         }
 
+        if (self::containers($line) > $this->maxContainers) {
+            return new ProtocolException("a message holds more than {$this->maxContainers} arrays and objects");
+        }
+
         try {
-            $decoded = json_decode($line, true, $this->maxDepth, JSON_THROW_ON_ERROR);
+            $decoded = json_decode($line, true, $this->maxDepth + 1, JSON_THROW_ON_ERROR);
         } catch (JsonException $exception) {
             return new ProtocolException($exception->getCode() === JSON_ERROR_UTF8 ? 'a message holds invalid UTF-8' : 'a message is not valid JSON: ' . $exception->getMessage());
         }

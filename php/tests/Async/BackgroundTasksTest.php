@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Raphp\Tests\Async;
 
+use function Amp\async;
+
 use Amp\Cancellation;
 use Amp\CancelledException;
 
 use function Amp\delay;
 
+use Amp\Future;
 use Amp\TimeoutCancellation;
 use ArrayObject;
 use Error;
@@ -16,9 +19,11 @@ use Monolog\Handler\TestHandler;
 use Monolog\Level;
 use Monolog\Logger;
 use PHPUnit\Framework\TestCase;
+use Psr\Log\AbstractLogger;
 use Raphp\Async\BackgroundTasks;
 use Revolt\EventLoop;
 use RuntimeException;
+use Stringable;
 use Throwable;
 use TypeError;
 
@@ -235,5 +240,79 @@ final class BackgroundTasksTest extends TestCase
         $this->tasks->awaitAll();
 
         self::assertSame('running', $result);
+    }
+
+    // ------------------------------------------------------------ found by the independent review
+
+    public function testATaskThatReturnsAFailingFutureIsLoggedAndNeverLeavesAnUnhandledFuture(): void
+    {
+        $this->tasks->run(static fn(Cancellation $cancellation): Future => async(static function (): never {
+            delay(0.01);
+
+            throw new RuntimeException('inner failure');
+        }), 'hands back a future');
+
+        $this->tasks->awaitAll();
+        $this->settle();
+
+        self::assertTrue($this->logs->hasErrorThatContains('background task failed'));
+        self::assertSame('hands back a future', $this->logs->getRecords()[0]->context['task']);
+        self::assertSame([], $this->loopErrors, 'the returned future must not be left unhandled');
+    }
+
+    public function testATaskThatReturnsAFutureLastsUntilThatFutureIsDone(): void
+    {
+        $finished = new ArrayObject();
+        $this->tasks->run(static fn(Cancellation $cancellation): Future => async(static function () use ($finished): void {
+            delay(0.05);
+            $finished->append('done');
+        }), 'hands back a future');
+
+        self::assertSame(1, $this->tasks->count());
+        $this->tasks->awaitAll();
+
+        self::assertCount(1, $finished, 'awaitAll must wait for the future the task handed back');
+        self::assertSame(0, $this->tasks->count());
+    }
+
+    public function testACancelledExceptionFromTheTasksOwnTimeoutIsAFailureNotAQuietCancel(): void
+    {
+        $this->tasks->run(static function (Cancellation $cancellation): void {
+            delay(5, true, new TimeoutCancellation(0.01));
+        }, 'times itself out');
+
+        $this->tasks->awaitAll();
+
+        self::assertTrue($this->logs->hasErrorThatContains('background task failed'), 'a task\'s own timeout is a failure');
+        self::assertFalse($this->logs->hasDebugThatContains('background task cancelled'));
+    }
+
+    public function testALoggerThatThrowsDoesNotLoseTheFailureOrBreakAwaitAll(): void
+    {
+        $logFile = tempnam(sys_get_temp_dir(), 'raphp-log');
+        self::assertIsString($logFile);
+        $previous = ini_set('error_log', $logFile);
+        $tasks = new BackgroundTasks(new class extends AbstractLogger {
+            public function log($level, string|Stringable $message, array $context = []): void
+            {
+                throw new RuntimeException('the log is broken');
+            }
+        });
+
+        try {
+            $tasks->run(static function (): never {
+                throw new RuntimeException('the task failed');
+            }, 'doomed');
+
+            $tasks->awaitAll();
+            $this->settle();
+
+            self::assertSame(0, $tasks->count());
+            self::assertSame([], $this->loopErrors);
+            self::assertStringContainsString('could not log "background task failed"', (string) file_get_contents($logFile));
+        } finally {
+            ini_set('error_log', $previous === false ? '' : $previous);
+            unlink($logFile);
+        }
     }
 }

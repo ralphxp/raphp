@@ -27,7 +27,7 @@ final readonly class Request implements Envelope
         public ?string $trace = null,
     ) {
         Validation::positive($id, '"id"');
-        Validation::notEmpty($method, '"method"');
+        Validation::method($method);
         Validation::params($params);
         if ($trace !== null) {
             Validation::trace($trace);

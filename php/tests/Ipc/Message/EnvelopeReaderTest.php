@@ -71,7 +71,7 @@ final class EnvelopeReaderTest extends TestCase
         [$hello, $request, $progress, $result, $failure, $cancel, $appEvent, $echo, $ping, $pong, $bye] = array_map($reader->read(...), $this->golden());
 
         self::assertEquals(new Hello(1, 'worker', 'main', 4242, []), $hello);
-        self::assertEquals(new Request(17, 'files.scan', ['path' => '/tmp/some dir']), $request);
+        self::assertEquals(new Request(17, 'files.scan', ['path' => '/tmp/some dir'], '9f2c4a1b7d3e5f60'), $request);
         self::assertEquals(new Event('progress', ['done' => 40, 'total' => 100], 17), $progress);
         self::assertInstanceOf(Response::class, $result);
         self::assertSame(17, $result->id);
@@ -213,6 +213,7 @@ final class EnvelopeReaderTest extends TestCase
         yield 'request method null' => [['kind' => 'req', 'id' => 1, 'method' => null], 'needs a string "method"'];
         yield 'request method empty' => [['kind' => 'req', 'id' => 1, 'method' => ''], 'invalid req message: "method" must not be empty'];
         yield 'request params a list' => [['kind' => 'req', 'id' => 1, 'method' => 'a', 'params' => [1, 2]], 'invalid req message: "params" must be an object'];
+        yield 'request method too long' => [['kind' => 'req', 'id' => 1, 'method' => str_repeat('m', 257)], 'invalid req message: "method" must be at most 256 bytes'];
         yield 'request params a string' => [['kind' => 'req', 'id' => 1, 'method' => 'a', 'params' => 'x'], '"params" must be an object'];
         yield 'request params null' => [['kind' => 'req', 'id' => 1, 'method' => 'a', 'params' => null], '"params" must be an object'];
         yield 'request params a number' => [['kind' => 'req', 'id' => 1, 'method' => 'a', 'params' => 3], '"params" must be an object'];
@@ -268,6 +269,7 @@ final class EnvelopeReaderTest extends TestCase
 
         // bye
         yield 'bye reason a number' => [['kind' => 'bye', 'reason' => 5], 'needs a string "reason"'];
+        yield 'bye reason too long' => [['kind' => 'bye', 'reason' => str_repeat('r', 257)], 'invalid bye message: "reason" must be at most 256 bytes'];
         yield 'bye reason null' => [['kind' => 'bye', 'reason' => null], 'needs a string "reason"'];
     }
 

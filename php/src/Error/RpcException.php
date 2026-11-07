@@ -37,6 +37,29 @@ abstract class RpcException extends RaphpException
     }
 
     /**
+     * The most of a peer's error message that is kept. The message ends up in logs and exception
+     * traces, and a peer could send megabytes.
+     */
+    public const int MAX_PEER_MESSAGE_BYTES = 2048;
+
+    /**
+     * Cuts a peer's text to {@see self::MAX_PEER_MESSAGE_BYTES}, never in the middle of a UTF-8 character.
+     */
+    private static function shorten(string $text): string
+    {
+        if (strlen($text) <= self::MAX_PEER_MESSAGE_BYTES) {
+            return $text;
+        }
+
+        $cut = substr($text, 0, self::MAX_PEER_MESSAGE_BYTES);
+        while ($cut !== '' && preg_match('//u', $cut) !== 1) {
+            $cut = substr($cut, 0, -1);
+        }
+
+        return $cut . '...';
+    }
+
+    /**
      * Rebuilds the exception from a received `error` object.
      *
      * - a framework code gives its own subclass;
@@ -57,6 +80,7 @@ abstract class RpcException extends RaphpException
             return new ProtocolException('malformed error object: "code" must be a non-empty string and "message" a string');
         }
 
+        $message = self::shorten($message);
         $data = $error['data'] ?? null;
         $known = ErrorCode::fromWire($code);
         if ($known !== null) {

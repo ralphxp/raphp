@@ -67,16 +67,81 @@ final class OutboundQueueTest extends AsyncTestCase
         self::assertSame('3', $queue->pop());
     }
 
-    public function testPushNowNeverWaitsEvenWhenTheQueueIsFull(): void
+    public function testPushNowNeverWaitsEvenWhenTheQueueIsFullButStopsAtTheReserve(): void
     {
-        $queue = new OutboundQueue(1);
+        $queue = new OutboundQueue(1, 2);
         $queue->push('1');
 
         self::assertTrue($queue->pushNow('2'));
         self::assertTrue($queue->pushNow('3'));
+        self::assertFalse($queue->pushNow('4'), 'beyond capacity plus reserve the line must be refused, not queued');
         self::assertSame('1', $queue->pop());
         self::assertSame('2', $queue->pop());
         self::assertSame('3', $queue->pop());
+        self::assertTrue($queue->pushNow('5'), 'room that was freed can be used again');
+    }
+
+    public function testWithoutAReservePushNowStopsAtTheCapacity(): void
+    {
+        $queue = new OutboundQueue(2);
+
+        self::assertTrue($queue->pushNow('1'));
+        self::assertTrue($queue->pushNow('2'));
+        self::assertFalse($queue->pushNow('3'));
+    }
+
+    public function testASenderThatWaitsIsHeldAtTheCapacityNotAtTheReserve(): void
+    {
+        $queue = new OutboundQueue(1, 5);
+        $queue->push('1');
+        $done = new Recorder();
+        $pusher = async(static function () use ($queue, $done): void {
+            $queue->push('2');
+            $done->add();
+        });
+        delay(0.02);
+
+        self::assertSame(0, $done->count());
+        self::assertSame('1', $queue->pop());
+        $pusher->await();
+        self::assertSame(1, $done->count());
+    }
+
+    public function testALineWithAKeyIsDroppedWhileOneWithTheSameKeyIsStillWaiting(): void
+    {
+        $queue = new OutboundQueue(10, 10);
+
+        self::assertTrue($queue->pushNow('pong-1', 'pong'));
+        self::assertTrue($queue->pushNow('pong-2', 'pong'), 'a duplicate counts as accepted: its work is already queued');
+        self::assertTrue($queue->pushNow('other'));
+        self::assertTrue($queue->pushNow('pong-3', 'pong'));
+
+        self::assertSame('pong-1', $queue->pop());
+        self::assertSame('other', $queue->pop());
+        self::assertTrue($queue->pushNow('pong-4', 'pong'), 'once the keyed line is taken, a new one is accepted');
+        self::assertSame('pong-4', $queue->pop());
+    }
+
+    public function testDuplicatesDoNotUseUpTheReserve(): void
+    {
+        $queue = new OutboundQueue(1, 1);
+
+        for ($ping = 0; $ping < 1000; $ping++) {
+            self::assertTrue($queue->pushNow('pong', 'pong'));
+        }
+
+        self::assertTrue($queue->pushNow('next'), 'a thousand duplicates must still leave room');
+    }
+
+    public function testClosingForgetsTheKeys(): void
+    {
+        $queue = new OutboundQueue(10, 10);
+        $queue->pushNow('pong', 'pong');
+
+        $queue->close();
+
+        self::assertFalse($queue->pushNow('pong', 'pong'));
+        self::assertNull($queue->pop());
     }
 
     public function testSendersWaitingForRoomAreServedInArrivalOrder(): void

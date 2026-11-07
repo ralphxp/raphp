@@ -16,8 +16,11 @@ use function Amp\Future\await;
 
 use Closure;
 use InvalidArgumentException;
+use Monolog\Handler\TestHandler;
 use Monolog\Level;
+use Monolog\Logger;
 use Raphp\Error\ApplicationException;
+use Raphp\Error\ErrorCode;
 use Raphp\Error\InternalErrorException;
 use Raphp\Error\InvalidParamsException;
 use Raphp\Error\MethodNotFoundException;
@@ -28,6 +31,9 @@ use Raphp\Error\RpcException;
 use Raphp\Error\WorkerCrashedException;
 use Raphp\Error\WorkerUnavailableException;
 use Raphp\Ipc\Codec\JsonLineCodec;
+use Raphp\Rpc\Middleware\ErrorMappingMiddleware;
+use Raphp\Rpc\Middleware\TimingMiddleware;
+use Raphp\Rpc\Middleware\TraceIdMiddleware;
 use Raphp\Rpc\MiddlewareStack;
 use Raphp\Rpc\RpcHandler;
 use Raphp\Rpc\RpcMiddleware;
@@ -196,17 +202,24 @@ final class RpcPeerTest extends AsyncTestCase
     public function testProgressForACallNobodyWaitsForAnymoreIsIgnored(): void
     {
         $pair = $this->open();
-        $pair->serverHandlers->register('scan', static function (RpcRequest $request, ?Cancellation $cancellation): string {
-            delay(0.05, true, $cancellation);
+        $reported = new Recorder();
+        $pair->serverHandlers->register('scan', static function (RpcRequest $request) use ($reported): string {
+            delay(0.08); // deliberately ignores cancellation: it is still running after the caller gave up
             $request->progress->report(['late' => true]);
+            $reported->add();
 
             return 'x';
         });
+        $progress = new Recorder();
 
-        $error = $this->thrownBy(fn() => $pair->client->call('scan', timeout: 0.01));
-        $this->settle(0.15);
+        $error = $this->thrownBy(fn(): mixed => $pair->client->call('scan', timeout: 0.02, onProgress: static function () use ($progress): void {
+            $progress->add();
+        }));
+        $this->settle(0.25);
 
         self::assertInstanceOf(RequestTimeoutException::class, $error);
+        self::assertSame(1, $reported->count(), 'the handler must really have reported progress after the caller gave up');
+        self::assertSame(0, $progress->count(), 'a call that is over must not get progress');
         self::assertSame([], $this->loopErrors);
         self::assertFalse($pair->clientLogs->hasWarningRecords());
     }
@@ -439,13 +452,30 @@ final class RpcPeerTest extends AsyncTestCase
         self::assertSame('E_PROTOCOL', $error->wireCode());
     }
 
-    public function testAListAsParamsIsRefusedBeforeAnythingIsSent(): void
+    /**
+     * @return iterable<string, array{string, array<array-key, mixed>}>
+     */
+    public static function invalidCalls(): iterable
     {
-        $pair = $this->open();
+        yield 'a list as params' => ['echo', [1, 2, 3]];
+        yield 'an empty method' => ['', ['a' => 1]];
+        yield 'a method name that is too long' => [str_repeat('m', 300), ['a' => 1]];
+    }
 
-        $error = $this->thrownBy(fn(): mixed => $pair->client->call('echo', [1, 2, 3]));
+    /**
+     * @param array<array-key, mixed> $params
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('invalidCalls')]
+    public function testAnInvalidCallIsRefusedBeforeAnythingIsTakenForItSoNoSlotLeaks(string $method, array $params): void
+    {
+        $pair = $this->open(new RpcPeerOptions(maxInFlight: 1));
+        $pair->serverHandlers->register('echo', self::echoParams(...));
 
-        self::assertInstanceOf(InvalidArgumentException::class, $error);
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            self::assertInstanceOf(InvalidArgumentException::class, $this->thrownBy(fn(): mixed => $pair->client->call($method, $params, timeout: 2.0)));
+        }
+
+        self::assertSame(['ok' => 1], $pair->client->call('echo', ['ok' => 1], timeout: 2.0), 'with one slot, three refused calls must not have used it up');
     }
 
     // ------------------------------------------------------------ closing
@@ -599,6 +629,24 @@ final class RpcPeerTest extends AsyncTestCase
         self::assertContains('E_WORKER_UNAVAILABLE', $seen->entries(), 'the refused call must pass through the middleware as a failure response');
     }
 
+    public function testCallsWaitingForASlotFailWithTheReasonTheConnectionEnded(): void
+    {
+        $pair = $this->open(new RpcPeerOptions(maxInFlight: 1));
+        $pair->serverHandlers->register('hold', static function (RpcRequest $request, ?Cancellation $cancellation): string {
+            delay(10, true, $cancellation);
+
+            return 'x';
+        });
+        $running = async(fn(): mixed => $pair->client->call('hold', timeout: 20.0));
+        $waiting = async(fn(): mixed => $pair->client->call('hold', timeout: 20.0));
+        delay(0.05);
+
+        $pair->server->close();
+
+        self::assertInstanceOf(WorkerCrashedException::class, $this->thrownBy(fn(): mixed => $running->await()));
+        self::assertInstanceOf(WorkerCrashedException::class, $this->thrownBy(fn(): mixed => $waiting->await()), 'the waiting call must get the same reason as the running one');
+    }
+
     public function testCallsWaitingForASlotFailWhenTheConnectionClosesInsteadOfHanging(): void
     {
         $pair = $this->open(new RpcPeerOptions(maxInFlight: 1));
@@ -647,5 +695,105 @@ final class RpcPeerTest extends AsyncTestCase
         self::assertFalse($pair->clientLogs->hasRecords(Level::Warning));
         self::assertFalse($pair->serverLogs->hasRecords(Level::Error));
         self::assertSame([], $this->loopErrors);
+    }
+
+    // ------------------------------------------------------------ the inbound middleware chain, through a real peer
+
+    public function testInboundMiddlewareWrapsTheHandlerInOrder(): void
+    {
+        $log = new Recorder();
+        $layer = static fn(string $name): RpcMiddleware => new readonly class ($name, $log) implements RpcMiddleware {
+            public function __construct(private string $name, private Recorder $log) {}
+
+            public function process(RpcRequest $request, RpcHandler $next, ?Cancellation $cancellation = null): RpcResponse
+            {
+                $this->log->add("{$this->name} in");
+                $response = $next->handle($request, $cancellation);
+                $this->log->add("{$this->name} out");
+
+                return $response;
+            }
+        };
+        $pair = PeerPair::open(serverInbound: new MiddlewareStack([$layer('outer'), $layer('inner')]));
+        $this->pair = $pair;
+        $pair->serverHandlers->register('x', static function () use ($log): string {
+            $log->add('handler');
+
+            return 'ok';
+        });
+
+        self::assertSame('ok', $pair->client->call('x'));
+
+        self::assertSame(['outer in', 'inner in', 'handler', 'inner out', 'outer out'], $log->entries());
+    }
+
+    public function testInboundMiddlewareCanAnswerWithoutTheHandlerBeingCalled(): void
+    {
+        $shortCircuit = new class implements RpcMiddleware {
+            public function process(RpcRequest $request, RpcHandler $next, ?Cancellation $cancellation = null): RpcResponse
+            {
+                return RpcResponse::success('from the middleware');
+            }
+        };
+        $pair = PeerPair::open(serverInbound: new MiddlewareStack([$shortCircuit]));
+        $this->pair = $pair;
+        $called = new Recorder();
+        $pair->serverHandlers->register('x', static function () use ($called): string {
+            $called->add();
+
+            return 'from the handler';
+        });
+
+        self::assertSame('from the middleware', $pair->client->call('x'));
+        self::assertSame(0, $called->count());
+    }
+
+    public function testInboundMiddlewareCanChangeWhatTheHandlerSees(): void
+    {
+        $rewriter = new class implements RpcMiddleware {
+            public function process(RpcRequest $request, RpcHandler $next, ?Cancellation $cancellation = null): RpcResponse
+            {
+                return $next->handle($request->withParams(['rewritten' => true]), $cancellation);
+            }
+        };
+        $pair = PeerPair::open(serverInbound: new MiddlewareStack([$rewriter]));
+        $this->pair = $pair;
+        $pair->serverHandlers->register('echo', self::echoParams(...));
+
+        self::assertSame(['rewritten' => true], $pair->client->call('echo', ['original' => true]));
+    }
+
+    public function testErrorMappingMiddlewareTurnsAHandlerExceptionIntoTheMappedErrorOnTheCallersSide(): void
+    {
+        $mapping = new ErrorMappingMiddleware([InvalidArgumentException::class => ErrorCode::InvalidParams]);
+        $pair = PeerPair::open(serverInbound: new MiddlewareStack([$mapping]));
+        $this->pair = $pair;
+        $pair->serverHandlers->register('strict', static function (): never {
+            throw new InvalidArgumentException('"path" is required');
+        });
+
+        $error = $this->thrownBy(fn(): mixed => $pair->client->call('strict'));
+
+        self::assertInstanceOf(InvalidParamsException::class, $error);
+        self::assertSame('"path" is required', $error->getMessage());
+    }
+
+    public function testTimingMiddlewareOnTheServerLogsTheCallWithItsTraceId(): void
+    {
+        $pair = PeerPair::open(
+            clientOutbound: new MiddlewareStack([new TraceIdMiddleware()]),
+            serverInbound: new MiddlewareStack([new TimingMiddleware(new Logger('timing', [$serverLogs = new TestHandler()]))]),
+        );
+        $this->pair = $pair;
+        $pair->serverHandlers->register('x', static fn(): string => 'ok');
+
+        $pair->client->call('x');
+
+        $records = $serverLogs->getRecords();
+        self::assertCount(1, $records);
+        self::assertSame('x', $records[0]->context['method']);
+        self::assertSame('ok', $records[0]->context['outcome']);
+        self::assertIsString($records[0]->context['trace'], 'the trace id the client generated must reach the server');
+        self::assertSame(1, preg_match('/\A[0-9a-f]{16}\z/', $records[0]->context['trace']));
     }
 }

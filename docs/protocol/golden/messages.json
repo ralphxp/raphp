@@ -13,7 +13,8 @@
         "method": "files.scan",
         "params": {
             "path": "/tmp/some dir"
-        }
+        },
+        "trace": "9f2c4a1b7d3e5f60"
     },
     {
         "kind": "evt",

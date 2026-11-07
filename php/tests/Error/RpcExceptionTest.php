@@ -150,6 +150,34 @@ final class RpcExceptionTest extends TestCase
         self::assertNull($exception->data);
     }
 
+    public function testAnErrorMessageFromAPeerIsCutToTheLimitAndMarkedAsCut(): void
+    {
+        $exception = RpcException::fromWire(['code' => 'E_INTERNAL', 'message' => str_repeat('a', 100_000)]);
+
+        self::assertSame(RpcException::MAX_PEER_MESSAGE_BYTES + 3, strlen($exception->getMessage()));
+        self::assertStringEndsWith('...', $exception->getMessage());
+    }
+
+    public function testAMessageExactlyAtTheLimitIsKeptWhole(): void
+    {
+        $text = str_repeat('a', RpcException::MAX_PEER_MESSAGE_BYTES);
+
+        self::assertSame($text, RpcException::fromWire(['code' => 'E_INTERNAL', 'message' => $text])->getMessage());
+    }
+
+    public function testCuttingNeverSplitsAMultiByteCharacter(): void
+    {
+        foreach (["\u{e9}", "\u{20ac}", "\u{1f600}"] as $character) {
+            for ($offset = 0; $offset < 4; $offset++) {
+                $text = str_repeat('a', RpcException::MAX_PEER_MESSAGE_BYTES - $offset) . str_repeat($character, 20);
+                $message = RpcException::fromWire(['code' => 'E_INTERNAL', 'message' => $text])->getMessage();
+
+                self::assertSame(1, preg_match('//u', $message), 'the cut message must still be valid UTF-8');
+                self::assertLessThanOrEqual(RpcException::MAX_PEER_MESSAGE_BYTES + 3, strlen($message));
+            }
+        }
+    }
+
     public function testTheBaseClassesCannotBeThrownDirectly(): void
     {
         self::assertTrue((new ReflectionClass(RaphpException::class))->isAbstract());

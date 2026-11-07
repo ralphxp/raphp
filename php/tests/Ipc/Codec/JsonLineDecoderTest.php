@@ -189,6 +189,14 @@ final class JsonLineDecoderTest extends TestCase
         self::assertNull($decoder->finish());
     }
 
+    public function testAKeyThatAppearsTwiceKeepsItsLastValueAsPhpDoes(): void
+    {
+        $decoder = $this->decoder();
+        $decoder->feed("{\"a\":1,\"b\":2,\"a\":3}\n");
+
+        self::assertSame(['a' => 3, 'b' => 2], $decoder->next(), 'FRAMEWORK 6.3 documents this: the last value wins');
+    }
+
     public function testACarriageReturnBeforeTheNewlineIsTolerated(): void
     {
         $decoder = $this->decoder();
@@ -239,10 +247,10 @@ final class JsonLineDecoderTest extends TestCase
     public function testNestingBeyondTheDepthLimitIsAProtocolError(): void
     {
         $decoder = $this->decoder(maxDepth: 5);
-        $decoder->feed(str_repeat('{"a":', 5) . '1' . str_repeat('}', 5) . "\n" . str_repeat('{"a":', 4) . '1' . str_repeat('}', 4) . "\n");
+        $decoder->feed(str_repeat('{"a":', 6) . '1' . str_repeat('}', 6) . "\n" . str_repeat('{"a":', 5) . '1' . str_repeat('}', 5) . "\n");
 
-        self::assertInstanceOf(ProtocolException::class, $decoder->next());
-        self::assertIsArray($decoder->next());
+        self::assertInstanceOf(ProtocolException::class, $decoder->next(), 'six levels are one too many');
+        self::assertIsArray($decoder->next(), 'five levels are allowed');
     }
 
     public function testGoodMessagesAroundABadLineAreNeverLost(): void

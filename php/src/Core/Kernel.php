@@ -63,6 +63,9 @@ final class Kernel
 
     private int $exitCode = self::EXIT_OK;
 
+    /** Counts calls of run(), so work left over from an earlier run can tell it is stale. */
+    private int $runs = 0;
+
     /** @var Suspension<null>|null */
     private ?Suspension $finished = null;
 
@@ -119,17 +122,24 @@ final class Kernel
             $watchers[] = EventLoop::onSignal($signal, fn() => $this->onSignal($signal, $code));
         }
 
-        EventLoop::queue(function () use ($main): void {
+        $run = ++$this->runs;
+
+        EventLoop::queue(function () use ($main, $run): void {
             try {
                 $main($this);
             } catch (Throwable $exception) {
-                $this->logger->error('uncaught exception in the application', ['exception' => $exception]);
-                $this->stop(self::EXIT_ERROR);
+                // A main left over from an earlier run that ends late must not stop this run.
+                if ($this->runs === $run) {
+                    $this->logger->error('uncaught exception in the application', ['exception' => $exception]);
+                    $this->stop(self::EXIT_ERROR);
+                }
 
                 return;
             }
 
-            $this->stop(self::EXIT_OK);
+            if ($this->runs === $run) {
+                $this->stop(self::EXIT_OK);
+            }
         });
 
         $finished->suspend();
@@ -163,8 +173,20 @@ final class Kernel
         $this->stopWaiters = [];
 
         EventLoop::queue(function (): void {
-            $this->runShutdownHooks();
-            $this->finished?->resume();
+            try {
+                $this->runShutdownHooks();
+            } catch (Throwable $exception) {
+                // Running the hooks failed as a whole (a logger that throws, say). The process must
+                // still end, with an error code, instead of waiting for a signal.
+                if ($this->exitCode === self::EXIT_OK) {
+                    $this->exitCode = self::EXIT_ERROR;
+                }
+
+                error_log("raphp: running the shutdown hooks failed ({$exception->getMessage()})");
+            } finally {
+                $this->hooks = [];
+                $this->finished?->resume();
+            }
         });
     }
 

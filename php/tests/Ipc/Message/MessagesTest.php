@@ -33,6 +33,9 @@ final class MessagesTest extends TestCase
         yield 'request id negative' => [static fn(): Envelope => new Request(-3, 'a.b')];
         yield 'request method empty' => [static fn(): Envelope => new Request(1, '')];
         yield 'request params a list' => [static fn(): Envelope => new Request(1, 'a.b', [1, 2])];
+        yield 'request method too long' => [static fn(): Envelope => new Request(1, str_repeat('m', 257))];
+        yield 'event method too long' => [static fn(): Envelope => new Event(str_repeat('m', 257))];
+        yield 'bye reason too long' => [static fn(): Envelope => new Bye(str_repeat('r', 257))];
         yield 'request trace empty' => [static fn(): Envelope => new Request(1, 'a.b', [], '')];
         yield 'request trace with a space' => [static fn(): Envelope => new Request(1, 'a.b', [], 'a b')];
         yield 'request trace with a newline' => [static fn(): Envelope => new Request(1, 'a.b', [], "a\nb")];
@@ -104,6 +107,13 @@ final class MessagesTest extends TestCase
         self::assertSame(['id', 'kind', 'method', 'params'], array_keys((new Request(1, 'a'))->toArray()));
         self::assertSame(['id', 'kind', 'method', 'params', 'trace'], array_keys((new Request(1, 'a', [], 'abc-1.2_x'))->toArray()));
         self::assertSame('abc-1.2_x', (new Request(1, 'a', [], 'abc-1.2_x'))->toArray()['trace']);
+    }
+
+    public function testTheLongestMethodNameAndByeReasonAreAccepted(): void
+    {
+        self::assertSame(256, strlen((new Request(1, str_repeat('m', 256)))->method));
+        self::assertSame(256, strlen((new Event(str_repeat('m', 256)))->method));
+        self::assertSame(256, strlen((new Bye(str_repeat('r', 256)))->reason));
     }
 
     public function testTheLongestAndShortestTraceIdsAreAccepted(): void

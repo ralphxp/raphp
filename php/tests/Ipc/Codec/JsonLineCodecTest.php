@@ -15,7 +15,7 @@ use Raphp\Ipc\Codec\JsonLineCodec;
 final class JsonLineCodecTest extends TestCase
 {
     /**
-     * @return iterable<string, array{int, int}>
+     * @return iterable<string, array{int, int}|array{int, int, int}>
      */
     public static function nonPositiveLimits(): iterable
     {
@@ -23,6 +23,8 @@ final class JsonLineCodecTest extends TestCase
         yield 'negative line size' => [-1, 64];
         yield 'zero depth' => [1024, 0];
         yield 'negative depth' => [1024, -5];
+        yield 'zero containers' => [1024, 64, 0];
+        yield 'negative containers' => [1024, 64, -1];
     }
 
     public function testAMessageBecomesOneCompactLineEndingInANewline(): void
@@ -118,11 +120,132 @@ final class JsonLineCodecTest extends TestCase
     }
 
     #[DataProvider('nonPositiveLimits')]
-    public function testNonPositiveLimitsAreRefused(int $maxLineBytes, int $maxDepth): void
+    public function testNonPositiveLimitsAreRefused(int $maxLineBytes, int $maxDepth, int $maxContainers = 10): void
     {
         $this->expectException(InvalidArgumentException::class);
 
-        new JsonLineCodec($maxLineBytes, $maxDepth);
+        new JsonLineCodec($maxLineBytes, $maxDepth, $maxContainers);
+    }
+
+    /**
+     * A message nested `$levels` deep, counting the message itself as level 1.
+     *
+     * @return array<string, mixed>
+     */
+    private function nested(int $levels): array
+    {
+        $message = ['leaf' => 1];
+        for ($level = 1; $level < $levels; $level++) {
+            $message = ['x' => $message];
+        }
+
+        return $message;
+    }
+
+    public function testTheEncoderAndTheDecoderAgreeExactlyOnTheDepthLimit(): void
+    {
+        $codec = new JsonLineCodec(maxDepth: 5);
+        $unlimited = new JsonLineCodec(maxDepth: 500);
+
+        for ($levels = 1; $levels <= 8; $levels++) {
+            $encodes = true;
+            try {
+                $codec->encode($this->nested($levels));
+            } catch (ProtocolException) {
+                $encodes = false;
+            }
+
+            $decoder = $codec->createDecoder();
+            $decoder->feed($unlimited->encode($this->nested($levels)));
+            $decodes = is_array($decoder->next());
+
+            self::assertSame($levels <= 5, $encodes, "encoding {$levels} levels");
+            self::assertSame($encodes, $decodes, "the decoder must accept exactly what the encoder accepts ({$levels} levels)");
+        }
+    }
+
+    public function testTheDefaultDepthLimitIsSixtyFourLevelsForEncodingAndDecoding(): void
+    {
+        $codec = new JsonLineCodec();
+        $unlimited = new JsonLineCodec(maxDepth: 500);
+
+        $codec->encode($this->nested(64));
+        $decoder = $codec->createDecoder();
+        $decoder->feed($unlimited->encode($this->nested(64)));
+        self::assertIsArray($decoder->next());
+
+        try {
+            $codec->encode($this->nested(65));
+            self::fail('Expected ProtocolException.');
+        } catch (ProtocolException) {
+            self::addToAssertionCount(1);
+        }
+
+        $decoder->feed($unlimited->encode($this->nested(65)));
+        self::assertInstanceOf(ProtocolException::class, $decoder->next());
+    }
+
+    public function testAFloatThatLooksLikeAnIntegerStaysAFloat(): void
+    {
+        $codec = new JsonLineCodec();
+        $line = $codec->encode(['a' => 10.0, 'b' => -0.0, 'c' => 10, 'd' => 0.5]);
+
+        self::assertSame('{"a":10.0,"b":-0.0,"c":10,"d":0.5}' . "\n", $line);
+
+        $decoder = $codec->createDecoder();
+        $decoder->feed($line);
+        $decoded = $decoder->next();
+
+        self::assertIsArray($decoded);
+        self::assertSame(10.0, $decoded['a']);
+        self::assertSame(10, $decoded['c']);
+    }
+
+    public function testTheContainerLimitIsExactAndAppliesToEncodingAndDecoding(): void
+    {
+        $codec = new JsonLineCodec(maxContainers: 5);
+        $fits = ['a' => [[], [], []]];
+        $tooMany = ['a' => [[], [], [], []]];
+
+        self::assertSame('{"a":[[],[],[]]}' . "\n", $codec->encode($fits));
+
+        try {
+            $codec->encode($tooMany);
+            self::fail('Expected PayloadTooLargeException.');
+        } catch (PayloadTooLargeException $exception) {
+            self::assertSame(['limit' => 5], $exception->data);
+        }
+
+        $decoder = $codec->createDecoder();
+        $decoder->feed('{"a":[[],[],[]]}' . "\n" . '{"a":[[],[],[],[]]}' . "\n" . '{"ok":1}' . "\n");
+
+        $accepted = $decoder->next();
+        $refused = $decoder->next();
+        $afterwards = $decoder->next();
+
+        self::assertSame($fits, $accepted);
+        self::assertInstanceOf(ProtocolException::class, $refused);
+        self::assertStringContainsString('more than 5 arrays and objects', $refused->getMessage());
+        self::assertSame(['ok' => 1], $afterwards, 'a refused line must not stop the decoder');
+        self::assertFalse($decoder->isDead());
+    }
+
+    public function testALineOfTinyArraysIsRefusedBeforeItIsDecodedSoItCostsNoMemory(): void
+    {
+        $line = '{"a":[' . str_repeat('[1],', 400_000) . '[1]]}' . "\n";
+        $decoder = (new JsonLineCodec())->createDecoder();
+        $decoder->feed($line);
+        $before = memory_get_usage();
+
+        $item = $decoder->next();
+
+        self::assertInstanceOf(ProtocolException::class, $item);
+        self::assertLessThan(2 * 1024 * 1024, memory_get_usage() - $before, 'refusing the line must not decode it');
+    }
+
+    public function testTheDefaultContainerLimitIsTwoHundredThousand(): void
+    {
+        self::assertSame(200_000, JsonLineCodec::DEFAULT_MAX_CONTAINERS);
     }
 
     public function testEachDecoderHoldsItsOwnPartialInput(): void

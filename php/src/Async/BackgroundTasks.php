@@ -12,6 +12,7 @@ use Amp\DeferredCancellation;
 use Amp\Future;
 use Closure;
 use Psr\Log\LoggerInterface;
+use Psr\Log\LogLevel;
 use Throwable;
 
 /**
@@ -22,7 +23,9 @@ use Throwable;
  * `UnhandledFutureError`, because the task's own future is always handled here.
  *
  * Tasks receive a {@see Cancellation}. {@see self::cancelAll()} trips it, and a task that
- * ends because it was cancelled is logged at debug level, not as a failure.
+ * ends because of that is logged at debug level, not as a failure. A `CancelledException` from
+ * anything else (the task's own timeout, say) is a failure. A task may return a {@see Future}; the
+ * task then lasts until that future is done and its failure is logged like any other.
  */
 final class BackgroundTasks
 {
@@ -52,11 +55,21 @@ final class BackgroundTasks
 
         $future = async(function () use ($task, $name, $id, $cancellation): void {
             try {
-                $task($cancellation);
-            } catch (CancelledException) {
-                $this->logger->debug('background task cancelled', ['task' => $name]);
+                $result = $task($cancellation);
+                if ($result instanceof Future) {
+                    // A task that hands back a future is not finished until that future is: wait for
+                    // it here, so its failure is logged and never left unhandled.
+                    $result->await($cancellation);
+                }
+            } catch (CancelledException $exception) {
+                if ($cancellation->isRequested()) {
+                    $this->log(LogLevel::DEBUG, 'background task cancelled', ['task' => $name]);
+                } else {
+                    // Not our cancelAll(): the task's own timeout or some other cancellation. That is a failure.
+                    $this->log(LogLevel::ERROR, 'background task failed', ['task' => $name, 'exception' => $exception]);
+                }
             } catch (Throwable $exception) {
-                $this->logger->error('background task failed', ['task' => $name, 'exception' => $exception]);
+                $this->log(LogLevel::ERROR, 'background task failed', ['task' => $name, 'exception' => $exception]);
             } finally {
                 unset($this->running[$id]);
             }
@@ -66,6 +79,21 @@ final class BackgroundTasks
         // Amp starts the task on the next tick, so it cannot finish, and unset itself, before
         // it is tracked here.
         $this->running[$id] = $future;
+    }
+
+    /**
+     * Logs without ever throwing: a logger that fails must not turn a task failure into a lost
+     * error or make {@see self::awaitAll()} throw. As a last resort the line goes to the error log.
+     *
+     * @param array<string, mixed> $context
+     */
+    private function log(string $level, string $message, array $context): void
+    {
+        try {
+            $this->logger->log($level, $message, $context);
+        } catch (Throwable $loggerFailure) {
+            error_log("raphp: could not log \"{$message}\" ({$loggerFailure->getMessage()})");
+        }
     }
 
     /**

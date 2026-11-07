@@ -1,5 +1,5 @@
 {"kind":"hello","proto":1,"role":"worker","name":"main","pid":4242,"caps":[]}
-{"id":17,"kind":"req","method":"files.scan","params":{"path":"/tmp/some dir"}}
+{"id":17,"kind":"req","method":"files.scan","params":{"path":"/tmp/some dir"},"trace":"9f2c4a1b7d3e5f60"}
 {"kind":"evt","ref":17,"method":"progress","params":{"done":40,"total":100}}
 {"id":17,"kind":"res","result":{"count":100,"ratio":0.5,"ok":true,"next":null}}
 {"id":18,"kind":"res","error":{"code":"E_CANCELLED","message":"cancelled by the caller","data":null}}

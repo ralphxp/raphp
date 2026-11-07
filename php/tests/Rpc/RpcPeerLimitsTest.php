@@ -364,4 +364,67 @@ final class RpcPeerLimitsTest extends AsyncTestCase
         self::assertTrue($connection->peer->isClosed());
         self::assertSame(0, $handled->count());
     }
+
+    // ------------------------------------------------------------ a hostile peer that sends and never reads
+
+    public function testAPeerThatFloodsRequestsAndNeverReadsMakesTheConnectionCloseInsteadOfGrowingWithoutEnd(): void
+    {
+        $connection = RawConnection::open(new RpcPeerOptions(maxInbound: 8, outboundBuffer: 4));
+        $this->connection = $connection;
+        $handled = new Recorder();
+        $connection->handlers->register('echo', static function () use ($handled): string {
+            $handled->add();
+
+            return 'x';
+        });
+        $before = memory_get_usage();
+
+        try {
+            for ($id = 1; $id <= 5000 && !$connection->peer->isClosed(); $id++) {
+                $connection->raw->send(['id' => $id, 'kind' => 'req', 'method' => 'echo']);
+            }
+        } catch (Throwable) {
+            // the peer closed the connection on us: exactly what is expected
+        }
+
+        delay(0.1);
+
+        self::assertTrue($connection->peer->isClosed(), 'a peer that sends without reading must be cut off');
+        self::assertLessThan(1500, $handled->count(), 'the number of requests accepted must stay bounded');
+        self::assertLessThan(16 * 1024 * 1024, memory_get_usage() - $before);
+        self::assertTrue($connection->logs->hasWarningThatContains('does not read what is sent to it'));
+    }
+
+    public function testAPeerThatFloodsPingsAndNeverReadsCostsOnePongAtATimeNotOneEach(): void
+    {
+        $connection = RawConnection::open(new RpcPeerOptions(outboundBuffer: 4));
+        $this->connection = $connection;
+        $ping = '{"kind":"ping"}' . "\n";
+
+        for ($batch = 0; $batch < 40; $batch++) {
+            $connection->raw->sendRaw(str_repeat($ping, 500));
+        }
+
+        delay(0.1);
+
+        self::assertFalse($connection->peer->isClosed(), 'pings alone must not get the connection closed');
+
+        $pongs = 0;
+        while (true) {
+            try {
+                $message = $connection->raw->receive(0.2);
+            } catch (CancelledException) {
+                break;
+            }
+
+            if ($message === null) {
+                break;
+            }
+
+            ++$pongs;
+        }
+
+        self::assertGreaterThan(0, $pongs);
+        self::assertLessThan(2000, $pongs, '20,000 pings must not cost 20,000 pongs');
+    }
 }
