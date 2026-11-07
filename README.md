@@ -20,6 +20,8 @@ An async PHP runtime with an optional native GUI.
 | [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md) | The step-by-step plan and acceptance checks |
 | [`docs/SPIKE_REPORT.md`](docs/SPIKE_REPORT.md) | The Phase 0 evidence |
 | [`docs/PROGRESS.md`](docs/PROGRESS.md) | What has actually been done so far |
+| [`docs/BLOCKING_CALLS.md`](docs/BLOCKING_CALLS.md) | Which PHP calls stop the event loop, and what to use instead |
+| [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Soak and performance measurements |
 
 ## Requirements
 

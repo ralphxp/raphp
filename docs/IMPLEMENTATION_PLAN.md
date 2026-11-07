@@ -370,7 +370,10 @@ Detect `ext-uv` and `ext-eio` and select drivers automatically. Everything must 
 ### P2B.5 `rlm doctor` checks for blocking calls (documentation only). Size S
 A doc section listing blocking PHP functions and their Raphp replacements.
 
+**Result (2026-11-07):** passes. `docs/BLOCKING_CALLS.md`: a table of 14 blocking PHP calls with the longest stall of the event loop **measured** for each (`tools/bench/blocking.php`: `usleep` blocks the whole 50 ms, `exec` 56 to 59 ms, `file_get_contents` of 32 MiB 63 to 124 ms, `glob` of 20,000 entries 225 ms, `password_hash` 500 to 690 ms, `sort` of a million numbers 900 ms), what to use instead, and **whether it exists today**; the replacements are measured too (`Amp\delay` 1 to 2 ms, `Filesystem::openRead` 2 to 7 ms, `ProcessRunner` 5 to 11 ms per later call but 25 to 54 ms the first time, `Filesystem::list` 27 to 33 ms). Honest gaps stated in the page: no chunked write (`copy()` has no replacement), no delete, rename or mkdir, network and DNS replacements are Phase 7 and 8. Two recipes, both checked: a ten-line stall detector, and a `phpstan-disallowed-calls` configuration (run against sample code: it flags `src/` and honours `allowIn`). Also checked while writing it: stdin through `getStdin()` and `LineReader` keeps the loop ticking, and starting a command stalls about 5 ms for a 55 or 260 MiB master and 18 ms for an 870 MiB one. **Nothing in the plan's "rlm doctor" itself is built:** it is documentation only, as planned.
+
 **Checkpoint 2B:** tests green, short demo reading a large file while a timer keeps ticking.
+**Checkpoint 2B status (2026-11-07):** `examples/large-file` (`php examples/large-file/main.php`, with `--blocking` for the comparison, tested by `LargeFileExampleTest`). Run live with a 512 MiB file: streaming with `Filesystem::openRead()` took 0.38 s, the 1 ms timer ticked 183 times and the longest gap was 14.0 ms (14 to 35 ms over three runs on this loaded laptop); the plain `fread()` loop took 0.35 s, the timer ticked 10 times and the longest gap was 346.8 ms. The streaming read costs about 10% in speed (1,360 against 1,477 MiB/s).
 
 ---
 

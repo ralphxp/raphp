@@ -1,7 +1,7 @@
 # Raphp Progress Tracker
 
 **Last updated:** 2026-11-06
-**Current position (2026-11-07):** **Phase 2 is finished (Checkpoint 2 was reported; you said "continue", which I take as passed). Phase 2B is in progress: P2B.1 to P2B.4 are done (filesystem, process runner, stream helpers, accelerators), P2B.5 (the blocking-calls guide) is next, then Checkpoint 2B.** `make check` exits 0 with **1,238 tests, 8,998 assertions** (`make fast` runs the quick ones in about 8 s). Your last commit is `94b874e` (P2B.3); the P2B.4 work is **uncommitted**.
+**Current position (2026-11-07):** **Phase 2 is finished (Checkpoint 2 was reported; you said "continue", which I take as passed). Phase 2B is in progress: Phase 2B is finished: P2B.1 to P2B.5 are done. Checkpoint 2B is reported (live demo, tests green); I stop for your review before Phase 3.** `make check` exits 0 with **1,242 tests, 9,008 assertions** (`make fast` runs the quick ones in about 8 s). Your last commit is `01b9a69` (P2B.4); the P2B.5 work and the demo are **uncommitted**.
 **How this file works:** I update it at the end of every step and whenever something is decided or found. The plan lives in `IMPLEMENTATION_PLAN.md`, the design in `FRAMEWORK.md`, the evidence in `SPIKE_REPORT.md`. This file only records what has actually happened.
 
 Legend: ✅ done and verified · 🔄 in progress · ⏳ not started · ⛔ blocked · ⚠️ done with caveats
@@ -15,7 +15,7 @@ Legend: ✅ done and verified · 🔄 in progress · ⏳ not started · ⛔ bloc
 | 0 | Spikes and verification | ✅ finished (accepted when you started Phase 1) | 9 of 9 (P0.0 to P0.8) |
 | 1 | Repository foundation | ✅ finished, **awaiting your Checkpoint 1 review** | 6 of 6 (P1.1 to P1.6) |
 | 2 | Runtime core and IPC | ✅ finished (Checkpoint 2 passed on your "continue") | 13 of 13 (P2.1 to P2.13) |
-| 2B | Tier 1 standard library | 🔄 in progress | 4 of 5 (P2B.1 to P2B.4) |
+| 2B | Tier 1 standard library | ✅ steps done, **awaiting your Checkpoint 2B review** | 5 of 5 (P2B.1 to P2B.5) |
 | 3 | `libraphp` shim MVP | ⏳ not started | 0 |
 | 4 | UI framework | ⏳ not started | 0 |
 | 5 | `rlm` | ⏳ not started | 0 |
@@ -125,6 +125,7 @@ Clicks and key presses; a tray icon or menu; how the dialog looks; attaching the
 | **P2B.2** | Process runner | ✅ | `Raphp\Process\ProcessRunner` over `amphp/process` (2.1.2 added) for application commands only: `run()` (a list, no shell; directory, environment, input, timeout, cancellation, capture and/or a streaming callback), `stopAll()`, `runningCount()`; `ProcessResult`, three exceptions. **Found by measuring (F53):** `amphp/process` signals only the command's pid, so children of a command are left running as orphans; each command now runs under `setsid` as the leader of its own group and stopping signals the group (SIGTERM, 2 s grace, SIGKILL). PHPStan forbids `Process::start()` outside the runner (guard shown to fire). **35 tests with real processes**, including a timeout that kills a command and two background children, SIGTERM-before-SIGKILL, `stopAll()`. Mutation testing: 25 mutants, 24 killed (a real gap fixed: non-executable file in `PATH`; one equivalent). Suite 1,196 (run in full twice). One mutation-harness baseline failure was not reproduced in 11 reruns (unknown cause). Limits: own session (Ctrl-C does not reach commands); not stopped if the master is SIGKILLed. Needs your approval: D45 |
 | **P2B.3** | Stream helpers | ✅ | `Raphp\Stream\{LineBuffer, LineReader, ProgressStream, LineTooLongException}`: bounded line splitting (for chunks and for streams, also as an `amphp/pipeline` pipeline) and a stream wrapper that reports progress (throttled, exact at the end) for a worker's `ProgressReporter`. Piping is Amp's own `pipe()`; I added nothing there. **F54, measured:** Amp's `splitLines()` has no line limit and re-scans its buffer per chunk: 2.9 s against 46 ms for 16 MB without a newline. **33 tests**, mutation testing 22 of 22 killed (after two gaps found and fixed). Suite 1,230. Not added: `Filesystem::openWrite` (a file copy with progress would need it). Needs nothing from you |
 | **P2B.4** | Optional accelerators | ✅ | `Raphp\Runtime\{Accelerator, Accelerators}`: reports which of ext-uv, ext-ev, ext-event, ext-eio are loaded and which Revolt driver runs. Raphp selects nothing itself (Revolt does, by a documented order). **Verified with the real extensions** (you installed the two `-devel` packages; I built ext-uv 0.3.1 and ext-ev 1.2.3 in a scratch folder): the whole suite, in master and workers, first had 2 failures of 1,238 under ext-uv; after the fixes both drivers pass all 1,238. **F55, a real difference:** under ext-uv a plain `pcntl_signal()` handler waits for the next event (rule: signals only through `EventLoop::onSignal()`; Raphp's own code already does). The other failure was my own detector control comparing single samples (now three). Not done: ext-eio unused, ext-event untested, no speed measured. 8 tests, mutation testing 10 of 10 killed. Needs your approval: D46 |
+| **P2B.5** | Blocking-calls guide | ✅ | `docs/BLOCKING_CALLS.md` (documentation only, as planned): 14 blocking PHP calls with the **measured** stall of the loop (`tools/bench/blocking.php`), the replacement and whether it exists yet; replacements measured too; a stall-detector recipe and a PHPStan `disallowed-calls` recipe, both checked. Honest gaps listed (no chunked write, no delete/rename/mkdir, network in Phase 7, DNS in Phase 8). Also measured: the first `ProcessRunner` call stalls 25 to 54 ms, later ones 5 to 11 ms, and a spawn from an 870 MiB master 18 ms. 4 tests for the demo example. Needs nothing from you |
 
 **P2.6 closing notes**
 - **Independent adversarial review: applied (2026-11-07).** Six lenses, two skeptics per finding, run `wf_b96d35d5-8a2`, 76 agents: 35 candidates, 28 survived verification, 7 refuted. Full result: `~/.claude/projects/-mnt-C62A254E2A253CB5-Cod-dev-niphy/de5231df-0354-49b9-9f83-be10c9530b1d/subagents/workflows/wf_b96d35d5-8a2/journal.jsonl`. **Fixed, each with a test that fails without the fix** (checked by re-introducing the bug as a mutant: 26 of 28 such mutants killed, the 2 survivors explained below):
@@ -286,6 +287,8 @@ The authoritative log is `FRAMEWORK.md` section 15. In summary:
 
 **P2B.4 adds:** `php/src/Runtime/{Accelerator, Accelerators}.php`; test `Runtime/AcceleratorsTest`; a fixture and a test changed (see F55); `CONTRIBUTING.md` section on running the suite under another driver.
 
+**P2B.5 and Checkpoint 2B add:** `docs/BLOCKING_CALLS.md`, `tools/bench/blocking.php`, `examples/large-file/main.php`, `php/tests/Examples/LargeFileExampleTest.php`; the README lists two more documents.
+
 **Not created yet:** the shim crate and the `rlm` CLI.
 
 ---
@@ -367,3 +370,4 @@ The authoritative log is `FRAMEWORK.md` section 15. In summary:
 - You approved D39 to D43 and D45 (2026-11-07); recorded as Decided. Still open for you: F48/R26 (a byte budget for queues) and F50 (recycling on private memory), and D30.
 - P2B.3 built: the stream helpers. Amp already has piping and splitting, so I added only what it lacks: a bounded line splitter (Amp's is unbounded and quadratic on long lines, F54) and a progress-reporting stream.
 - P2B.4 built: the accelerator detector, verified by running the whole suite under real ext-uv and ext-ev (you installed the two `-devel` packages). It found one real difference (F55).
+- P2B.5 built: the blocking-calls guide, written from measurements. Phase 2B is complete; Checkpoint 2B reported with a live demo (512 MiB read: timer gap 14 ms streaming against 347 ms blocking).
