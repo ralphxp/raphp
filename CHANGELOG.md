@@ -11,6 +11,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - Renamed the project from the code name niphy to Raphp (namespace `Raphp\`, `libraphp`, `raphp.json`, `RAPHP_*` variables, CLI `rlm`). Spike code under `spikes/` keeps the old names.
 
 ### Added
+- Shim workspace and C ABI (step P3.1): `libraphp` with five functions, a committed C header, a contract for panics and for failure of the shim's UI thread, and a glibc report; a Rust mutation-testing tool.
 - Blocking-calls guide (step P2B.5) and the `examples/large-file` demonstration: which PHP calls stop the event loop, how long they stalled it, and what to use instead.
 - Optional accelerators (step P2B.4): a detector for ext-uv, ext-ev, ext-event and ext-eio and the running event-loop driver; the test suite was run under ext-uv and ext-ev.
 - Stream helpers (step P2B.3): a line splitter with a limit on line length (for chunks and for streams, also as a pipeline) and a stream wrapper that reports how many bytes have been read.

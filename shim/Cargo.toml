@@ -1,0 +1,19 @@
+[workspace]
+members = ["raphp", "xtask"]
+resolver = "3"
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.95"
+
+# R14 (docs/protocol/shim-abi.md): the shim must never abort the process it lives in. A panic is caught at
+# the C boundary and on the UI thread, and turns the shim "poisoned"; `panic = "abort"` would end the whole
+# master (and, through the parent-death signal, every worker). A test fails if this line is changed.
+[profile.release]
+panic = "unwind"
+opt-level = 3
+
+[profile.dev]
+panic = "unwind"

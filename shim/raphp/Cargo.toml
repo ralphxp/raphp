@@ -1,0 +1,21 @@
+[package]
+name = "raphp-shim"
+description = "libraphp: the native shim that Raphp's PHP side loads through FFI"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+name = "raphp"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+
+[features]
+# Compiles in a command that panics, so the tests can prove a panic is contained. Never enabled in a build for PHP.
+test-hooks = []
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"

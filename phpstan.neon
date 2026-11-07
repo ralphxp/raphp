@@ -27,6 +27,17 @@ parameters:
       message: '#^Call to an undefined method FFI::prctl\(\)\.$#'
       path: php/src/Runtime/Libc/ParentDeathSignal.php
       count: 1
+    # The shim's C functions and the status constants of its header are created by FFI at load time, so
+    # static analysis cannot know them. Only the files that talk to the shim may use them, and only names
+    # that start with raphp_ or RAPHP_. P3.5 adds the loader's directory (php/src/Ui/Ffi) to these paths.
+    -
+      message: '#^Call to an undefined method FFI::raphp_[a-z_]+\(\)\.$#'
+      paths:
+        - php/tests/Ui/Ffi/*
+    -
+      message: '#^Access to an undefined property FFI::\$RAPHP_[A-Z_]+\.$#'
+      paths:
+        - php/tests/Ui/Ffi/*
 
   # Forbidden calls. These ban by function name: whether the rule can tell a string
   # proc_open() argument from an array one is unverified (plan P1.3).

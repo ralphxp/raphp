@@ -35,6 +35,7 @@ Time and machine resources are limited, so each check runs at the point where it
 | At a checkpoint | an independent review, and a full mutation pass | longer; once per phase |
 
 - The tests tagged `#[Group('slow')]` use real processes, timers or heartbeats. They are about 5 classes but 80% of the test time. CI runs everything.
+- `tools/mutation/mutate_rust.py` does the same for the Rust shim (`cargo test` in a copy of `shim/`, a few seconds per change).
 - `tools/mutation/mutate.py` runs only the tests that belong to the file being changed and stops at the first failure. Add entries to its `FOCUS` table for new files. A mutant that survives is either a missing test or a change that cannot be observed (for example, an explicit `fclose` of a resource PHP closes anyway); say which.
 - Do not repeat a full run "to be sure". Repeat only when a timing-sensitive test has failed once.
 

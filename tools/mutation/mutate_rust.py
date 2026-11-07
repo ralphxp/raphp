@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+"""Focused mutation testing for the Rust shim (the PHP counterpart is mutate.py).
+
+    python3 tools/mutation/mutate_rust.py mutants.json
+
+`mutants.json` is a list of [file relative to shim/raphp/src, text to find, replacement, label]. The text
+must occur exactly once. Each change is made in a COPY of `shim/` (never in the repository), and
+`cargo test -p raphp-shim --lib` must fail for the mutant to count as killed. A mutant that does not
+compile is "not applicable". The shim has no dependencies, so each build takes a few seconds.
+"""
+import json
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def cargo_test(work: Path, timeout: int) -> tuple[int, str]:
+    env = {**__import__('os').environ, 'CARGO_TARGET_DIR': str(work / 'target')}
+    try:
+        done = subprocess.run(['cargo', 'test', '-p', 'raphp-shim', '--lib', '--offline'], cwd=work / 'shim', env=env,
+                              capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 124, 'timeout'
+    return done.returncode, (done.stdout + done.stderr).decode('utf-8', 'replace')
+
+
+def main() -> int:
+    mutants = json.load(open(sys.argv[1]))
+    work = Path(tempfile.mkdtemp(prefix='raphp-rust-mutation-'))
+    started = time.time()
+    try:
+        shutil.copytree(ROOT / 'shim', work / 'shim', ignore=shutil.ignore_patterns('target'))
+        code, output = cargo_test(work, 600)
+        if code != 0:
+            print('The baseline fails without any mutation, so no result would mean anything:\n' + output[-1500:])
+            return 1
+        print(f'baseline ok ({time.time() - started:.0f}s to copy, build and run it once)')
+
+        killed = survived = not_applicable = 0
+        for file, old, new, label in mutants:
+            path = work / 'shim/raphp/src' / file
+            original = path.read_text()
+            if original.count(old) != 1:
+                print(f'  BAD MUTANT (the text occurs {original.count(old)} times): {label}')
+                not_applicable += 1
+                continue
+            path.write_text(original.replace(old, new))
+            try:
+                code, output = cargo_test(work, 120)
+            finally:
+                path.write_text(original)
+            if 'error[E' in output or 'error: could not compile' in output:
+                not_applicable += 1
+                print(f'  NOT COMPILABLE  {label}')
+            elif code == 0:
+                survived += 1
+                print(f'  SURVIVED  {label}')
+            else:
+                killed += 1
+        print(f'\nmutants: {len(mutants)}   killed: {killed}   SURVIVED: {survived}   not applicable: {not_applicable}   time: {time.time() - started:.0f}s')
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
