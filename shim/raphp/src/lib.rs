@@ -8,20 +8,31 @@
 
 mod abi;
 mod backend;
+mod canvas;
+mod clipboard;
 mod clock;
 mod config;
 mod diagnostics;
+mod draw;
+mod edit;
 #[allow(
     dead_code,
     reason = "the producers are the backends of steps P3.4 and P3.6; until then only the tests and the test-hooks build create events. Remove this when they exist."
 )]
 mod events;
 mod health;
+mod input;
+#[allow(
+    dead_code,
+    reason = "drawing (step P3.8) is the user of layout; until then only the tests are. Remove this when it exists."
+)]
+mod layout;
 mod model;
 mod protocol;
 mod shim;
 mod status;
 mod surface;
+mod text;
 mod ui_thread;
 mod window;
 
@@ -36,15 +47,27 @@ pub use status::RaphpStatus;
 #[cfg(test)]
 mod backend_tests;
 #[cfg(test)]
+mod canvas_tests;
+#[cfg(test)]
 mod contract_tests;
+#[cfg(test)]
+mod draw_tests;
+#[cfg(test)]
+mod edit_tests;
 #[cfg(test)]
 mod event_tests;
 #[cfg(test)]
 mod headless_tests;
 #[cfg(test)]
+mod input_tests;
+#[cfg(test)]
+mod layout_tests;
+#[cfg(test)]
 mod model_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod text_input_tests;
 #[cfg(test)]
 mod window_tests;
 

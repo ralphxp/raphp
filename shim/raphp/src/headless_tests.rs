@@ -153,8 +153,13 @@ fn a_new_window_gets_its_first_frame_at_once() {
     assert_eq!((width, height), (40, 30));
     assert_eq!(pixels.len(), 40 * 30 * 4);
     assert!(
-        pixels.iter().all(|byte| *byte == 0xFF),
-        "blank white until drawing exists"
+        pixels.chunks_exact(4).any(|pixel| pixel[..3] != [0xFF; 3]),
+        "the label's text is drawn"
+    );
+    assert_eq!(
+        &pixels[pixels.len() - 4..],
+        &[0xFF; 4],
+        "and where nothing is drawn it is white"
     );
     unsafe { raphp_shutdown(shim) };
 }
@@ -619,5 +624,100 @@ fn a_poisoned_shim_still_lets_the_last_picture_be_read() {
     }
 
     assert_eq!(frame(shim, 1).map(|(w, h, _)| (w, h)), Ok((40, 30)));
+    unsafe { raphp_shutdown(shim) };
+}
+
+// ---------------------------------------------------------------- simulated input (P3.9)
+
+fn simulate(shim: *const RaphpShim, batch: u64, event: &Value) {
+    send(
+        shim,
+        batch,
+        &json!([{"op": "input.simulate", "window": 1, "event": event}]),
+    );
+}
+
+#[test]
+fn a_simulated_click_reaches_php_as_events_that_follow_the_done_event_of_its_batch() {
+    let shim = start();
+    send(
+        shim,
+        1,
+        &json!([
+            {"op": "window.create", "id": 1, "width": 120, "height": 60},
+            {"op": "widget.create", "id": 1, "type": "button", "props": {"label": "OK"}},
+            {"op": "window.set_root", "id": 1, "widget": 1},
+        ]),
+    );
+    barrier(shim);
+    let _ = events(shim);
+
+    send(
+        shim,
+        2,
+        &json!([
+            {"op": "input.simulate", "window": 1, "event": {"kind": "pointer.down", "x": 10, "y": 10}},
+            {"op": "input.simulate", "window": 1, "event": {"kind": "pointer.up", "x": 10, "y": 10}},
+        ]),
+    );
+    barrier(shim);
+
+    let kinds: Vec<String> = events(shim)
+        .iter()
+        .map(|event| event["type"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            "batch.done",
+            "pointer.down",
+            "focus.changed",
+            "pointer.up",
+            "click"
+        ],
+        "the batch took effect first; what the input led to follows"
+    );
+    unsafe { raphp_shutdown(shim) };
+}
+
+#[test]
+fn a_simulated_wheel_turn_scrolls_the_picture_and_asks_for_one_more_frame() {
+    let shim = start();
+    let mut commands = vec![
+        json!({"op": "window.create", "id": 1, "width": 120, "height": 80}),
+        json!({"op": "widget.create", "id": 1, "type": "scroll_view"}),
+        json!({"op": "widget.create", "id": 2, "type": "column"}),
+        json!({"op": "widget.append", "parent": 1, "child": 2}),
+        json!({"op": "window.set_root", "id": 1, "widget": 1}),
+    ];
+    for index in 0..12_u64 {
+        commands.push(json!({"op": "widget.create", "id": 10 + index, "type": "label", "props": {"text": format!("line {index}")}}));
+        commands.push(json!({"op": "widget.append", "parent": 2, "child": 10 + index}));
+    }
+    send(shim, 1, &Value::Array(commands));
+    barrier(shim);
+    let before = frame(shim, 1).unwrap().2;
+    let (requested, drawn) = counters(shim, 1);
+
+    simulate(
+        shim,
+        2,
+        &json!({"kind": "scroll", "x": 20, "y": 20, "dx": 0, "dy": 50}),
+    );
+    advance(shim, 10);
+
+    let after = frame(shim, 1).unwrap().2;
+    assert_ne!(before, after, "the picture shows the list scrolled");
+    assert_eq!(
+        counters(shim, 1),
+        (requested + 1, drawn + 1),
+        "one more frame asked for and drawn, and no more"
+    );
+    let scroll: Vec<Value> = events(shim)
+        .into_iter()
+        .filter(|event| event["type"] == "scroll")
+        .collect();
+    assert_eq!(scroll.len(), 1);
+    assert_eq!(scroll[0]["offset"], json!([0.0, 50.0]));
     unsafe { raphp_shutdown(shim) };
 }

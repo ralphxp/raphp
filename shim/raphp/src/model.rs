@@ -10,6 +10,7 @@ use serde_json::{Map, Value, json};
 use crate::backend::{Backend, BackendError};
 use crate::diagnostics::Diagnostics;
 use crate::events::Event;
+use crate::input::InputEvent;
 use crate::protocol::{
     Batch, Command, CommandError, ErrorCode, MAX_TEXT_BYTES, WindowSettings, parse_command,
 };
@@ -36,7 +37,12 @@ impl EventSink for Vec<Event> {
 pub(crate) enum PropType {
     Text,
     Bool,
-    Number { min: f64, max: f64 },
+    Number {
+        min: f64,
+        max: f64,
+    },
+    /// A canvas's draw list (`canvas.rs`): an array of operations, each checked.
+    DrawList,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,8 +55,18 @@ pub(crate) enum WidgetKind {
     ScrollView,
     Checkbox,
     TextInput,
+    /// One entry of a menu (shown in an overlay): a label, a shortcut shown at its right, a check mark.
+    MenuItem,
+    MenuSeparator,
+    /// Custom-drawn content: a size of its own and a draw list (`canvas.rs`).
+    Canvas,
 }
 
+/// A canvas's width or height in logical pixels.
+const CANVAS_SIZE: PropType = PropType::Number {
+    min: 0.0,
+    max: 10_000.0,
+};
 const GAP: (&str, PropType) = (
     "gap",
     PropType::Number {
@@ -66,6 +82,15 @@ const PADDING: (&str, PropType) = (
     },
 );
 const ENABLED: (&str, PropType) = ("enabled", PropType::Bool);
+/// How much of the space left over in its parent's main direction a widget takes, in proportion to its siblings'
+/// (flex-grow). 0, the default, keeps the widget at its own size.
+const GROW: (&str, PropType) = (
+    "grow",
+    PropType::Number {
+        min: 0.0,
+        max: 1000.0,
+    },
+);
 
 impl WidgetKind {
     pub fn from_name(name: &str) -> Option<Self> {
@@ -78,6 +103,9 @@ impl WidgetKind {
             "scroll_view" => Self::ScrollView,
             "checkbox" => Self::Checkbox,
             "text_input" => Self::TextInput,
+            "menu_item" => Self::MenuItem,
+            "menu_separator" => Self::MenuSeparator,
+            "canvas" => Self::Canvas,
             _ => return None,
         })
     }
@@ -97,20 +125,40 @@ impl WidgetKind {
     /// The properties of the widget, with the type each takes. `null` resets a property to its default.
     pub fn props(self) -> &'static [(&'static str, PropType)] {
         match self {
-            Self::Label => &[("text", PropType::Text)],
-            Self::Button => &[("label", PropType::Text), ENABLED],
-            Self::ProgressBar => &[("value", PropType::Number { min: 0.0, max: 1.0 })],
-            Self::Column | Self::Row => &[GAP, PADDING],
-            Self::ScrollView => &[],
+            Self::Label => &[("text", PropType::Text), GROW],
+            Self::Button => &[("label", PropType::Text), ENABLED, GROW],
+            Self::ProgressBar => &[
+                ("value", PropType::Number { min: 0.0, max: 1.0 }),
+                ("indeterminate", PropType::Bool),
+                GROW,
+            ],
+            Self::Column | Self::Row => &[GAP, PADDING, GROW],
+            Self::ScrollView => &[GROW],
             Self::Checkbox => &[
                 ("label", PropType::Text),
                 ("checked", PropType::Bool),
                 ENABLED,
+                GROW,
             ],
             Self::TextInput => &[
                 ("text", PropType::Text),
                 ("placeholder", PropType::Text),
                 ENABLED,
+                GROW,
+            ],
+            Self::MenuItem => &[
+                ("label", PropType::Text),
+                ("shortcut", PropType::Text),
+                ("checked", PropType::Bool),
+                ENABLED,
+                GROW,
+            ],
+            Self::MenuSeparator => &[GROW],
+            Self::Canvas => &[
+                ("width", CANVAS_SIZE),
+                ("height", CANVAS_SIZE),
+                ("ops", PropType::DrawList),
+                GROW,
             ],
         }
     }
@@ -135,6 +183,14 @@ fn check_prop(kind: WidgetKind, name: &str, value: &Value) -> Result<()> {
         (PropType::Number { min, max }, Value::Number(number)) => number
             .as_f64()
             .is_some_and(|n| n.is_finite() && n >= *min && n <= *max),
+        (PropType::DrawList, list) => {
+            return crate::canvas::parse(list).map(drop).map_err(|why| {
+                CommandError::new(
+                    ErrorCode::BadProp,
+                    format!("the value of \"{name}\" is not a draw list: {why}"),
+                )
+            });
+        }
         _ => false,
     };
     if fits {
@@ -155,6 +211,7 @@ fn describe(expected: PropType) -> String {
         PropType::Text => format!("a string of at most {MAX_TEXT_BYTES} bytes"),
         PropType::Bool => "true or false".to_owned(),
         PropType::Number { min, max } => format!("a number from {min} to {max}"),
+        PropType::DrawList => "a draw list".to_owned(),
     }
 }
 
@@ -169,14 +226,49 @@ struct Widget {
     text_revision: u64,
 }
 
+/// What layout and drawing may see of a widget.
+pub(crate) struct WidgetView<'a> {
+    pub kind: WidgetKind,
+    pub props: &'a BTreeMap<String, Value>,
+    pub children: &'a [u64],
+    /// How many times the user has changed this widget's text since PHP last set it.
+    pub text_revision: u64,
+}
+
 struct Window {
     settings: WindowSettings,
     root: Option<u64>,
 }
 
+/// Something a command asked of the interaction state, which the model does not own: done by the loop, in order,
+/// after the batch.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Request {
+    Focus {
+        widget: Option<u64>,
+        window: Option<u64>,
+    },
+    Input {
+        window: u64,
+        event: InputEvent,
+    },
+    OverlayShow {
+        window: u64,
+        widget: u64,
+        x: f32,
+        y: f32,
+        anchor: Option<u64>,
+    },
+    OverlayHide {
+        widget: u64,
+    },
+}
+
 /// What applying a batch led to.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct Outcome {
+    /// What the batch asked of the interaction state (focus, simulated input), in order.
+    pub requests: Vec<Request>,
     /// `app.quit` was applied: the UI loop must end.
     pub quit: bool,
     /// The windows whose picture is now out of date and need a frame, each once however many commands touched it.
@@ -190,6 +282,11 @@ pub(crate) struct Model {
     last_window_id: u64,
     /// Windows changed since the last batch ended (see [`Outcome::dirty`]).
     dirty: BTreeSet<u64>,
+    /// Asked of the interaction state by the commands of the batch being applied.
+    requests: Vec<Request>,
+    /// Counts the batches that changed the model and the sizes the window system gave, so that what is worked out
+    /// from the model (a layout) can be kept until it changes.
+    revision: u64,
     diagnostics: Arc<Diagnostics>,
 }
 
@@ -201,8 +298,44 @@ impl Model {
             last_widget_id: 0,
             last_window_id: 0,
             dirty: BTreeSet::new(),
+            requests: Vec::new(),
+            revision: 0,
             diagnostics,
         }
+    }
+
+    /// Changes whenever the tree, a property or a window size may have changed.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// The widget at the top of the tree a widget is in: the root of a window, an overlay, or a widget on its own.
+    pub fn top_of(&self, id: u64) -> Option<u64> {
+        let mut current = id;
+        for _ in 0..=MAX_DEPTH {
+            let widget = self.widgets.get(&current)?;
+            match widget.parent {
+                Some(parent) => current = parent,
+                None => return Some(current),
+            }
+        }
+
+        None
+    }
+
+    /// The window whose tree a widget is in (through its parents to a root), if any.
+    pub fn window_of_widget(&self, id: u64) -> Option<u64> {
+        let mut current = id;
+        // The depth is limited (MAX_DEPTH), so this loop ends; the bound is for a corrupt tree.
+        for _ in 0..=MAX_DEPTH {
+            let widget = self.widgets.get(&current)?;
+            match widget.parent {
+                Some(parent) => current = parent,
+                None => return widget.root_of,
+            }
+        }
+
+        None
     }
 
     /// Applies the commands of a batch in order. A command that fails changes nothing and is reported as an
@@ -267,7 +400,15 @@ impl Model {
             ));
         }
 
-        Outcome { quit, dirty }
+        if applied > 0 {
+            self.revision += 1;
+        }
+
+        Outcome {
+            quit,
+            dirty,
+            requests: std::mem::take(&mut self.requests),
+        }
     }
 
     fn execute(
@@ -296,6 +437,26 @@ impl Model {
             } => self.attach(parent, child, Some(index)),
             Command::WidgetRemove { id } => self.widget_remove(id),
             Command::WidgetDestroy { id } => self.widget_destroy(id),
+            Command::WidgetFocus { id, window } => self.widget_focus(id, window),
+            Command::OverlayShow {
+                window,
+                widget,
+                x,
+                y,
+                anchor,
+            } => self.overlay_show(window, widget, (x as f32, y as f32), anchor),
+            Command::OverlayHide { widget } => {
+                self.widget(widget)?;
+                self.requests.push(Request::OverlayHide { widget });
+
+                Ok(())
+            }
+            Command::InputSimulate { window, event } => {
+                self.window_mut(window)?;
+                self.requests.push(Request::Input { window, event });
+
+                Ok(())
+            }
             #[cfg(any(test, feature = "test-hooks"))]
             Command::TestPanic => panic!("the model panicked on purpose"),
             Command::AppQuit => {
@@ -305,6 +466,67 @@ impl Model {
                 Ok(())
             }
         }
+    }
+
+    /// An overlay is a widget tree that hangs from nothing: no parent, and not the root of a window.
+    fn overlay_show(
+        &mut self,
+        window: u64,
+        widget: u64,
+        at: (f32, f32),
+        anchor: Option<u64>,
+    ) -> Result<()> {
+        self.window_mut(window)?;
+        let found = self.widget(widget)?;
+        if found.parent.is_some() {
+            return Err(CommandError::new(
+                ErrorCode::HasParent,
+                "an overlay must be a widget with no parent",
+            )
+            .about(widget));
+        }
+        if found.root_of.is_some() {
+            return Err(CommandError::new(
+                ErrorCode::AlreadyRoot,
+                "an overlay cannot be the root of a window",
+            )
+            .about(widget));
+        }
+
+        if let Some(anchor) = anchor {
+            self.widget(anchor)?; // the widget to put it under must exist (an error about it, not about the overlay)
+        }
+
+        self.requests.push(Request::OverlayShow {
+            window,
+            widget,
+            x: at.0,
+            y: at.1,
+            anchor,
+        });
+
+        Ok(())
+    }
+
+    fn widget_focus(&mut self, id: Option<u64>, window: Option<u64>) -> Result<()> {
+        match (id, window) {
+            (Some(id), _) => {
+                self.widget(id)?;
+            }
+            (None, Some(window)) => {
+                self.window_mut(window)?;
+            }
+            (None, None) => {
+                return Err(CommandError::new(
+                    ErrorCode::MissingField,
+                    "widget.focus with a null id needs a window",
+                ));
+            }
+        }
+
+        self.requests.push(Request::Focus { widget: id, window });
+
+        Ok(())
     }
 
     // ------------------------------------------------------------ windows
@@ -674,8 +896,32 @@ impl Model {
         };
         window.settings.width = Some(width);
         window.settings.height = Some(height);
+        self.revision += 1;
 
         true
+    }
+
+    /// What layout needs to know about a window: its size in logical pixels and its root widget.
+    pub fn window_content(&self, id: u64) -> Option<(f64, f64, Option<u64>)> {
+        let window = self.windows.get(&id)?;
+
+        Some((
+            window.settings.width.unwrap_or(800.0),
+            window.settings.height.unwrap_or(600.0),
+            window.root,
+        ))
+    }
+
+    /// A read-only look at a widget, for layout and drawing.
+    pub fn widget_view(&self, id: u64) -> Option<WidgetView<'_>> {
+        let widget = self.widgets.get(&id)?;
+
+        Some(WidgetView {
+            kind: widget.kind,
+            props: &widget.props,
+            children: &widget.children,
+            text_revision: widget.text_revision,
+        })
     }
 
     pub fn has_window(&self, id: u64) -> bool {
@@ -824,13 +1070,27 @@ impl Model {
         self.windows.get(&id).map(|window| &window.settings)
     }
 
-    /// What the user typing will do from P3.11: change the text and count it, so that a stale PHP value can be told.
+    /// What the user typing does: the text of a text input is changed by the user, and the change is counted, so that
+    /// a value PHP built before it (and sends with the revision it last saw) is refused instead of overwriting it
+    /// (R15 rule 6). Returns the new revision, or none when the widget is not an enabled text input.
+    pub fn user_set_text(&mut self, id: u64, text: &str) -> Option<u64> {
+        let widget = self.widgets.get_mut(&id)?;
+        if widget.kind != WidgetKind::TextInput
+            || matches!(widget.props.get("enabled"), Some(Value::Bool(false)))
+        {
+            return None;
+        }
+
+        widget.props.insert("text".to_owned(), Value::from(text));
+        widget.text_revision += 1;
+        self.revision += 1;
+
+        Some(widget.text_revision)
+    }
+
     #[cfg(test)]
     pub fn simulate_user_edit(&mut self, id: u64, text: &str) {
-        if let Some(widget) = self.widgets.get_mut(&id) {
-            widget.props.insert("text".to_owned(), Value::from(text));
-            widget.text_revision += 1;
-        }
+        self.user_set_text(id, text);
     }
 }
 

@@ -39,6 +39,8 @@ An object with `"op"` and the fields the operation takes. **A field the operatio
 | `widget.insert` | `parent`, `child`, `index` | Adds it at `index` (0 to the number of children; the end is allowed, beyond is `bad_index`). |
 | `widget.remove` | `id` | Detaches the widget from its parent. It stays alive, parentless. |
 | `widget.destroy` | `id` | Destroys the widget and **everything below it**, and detaches it from its parent and its window. |
+| `widget.focus` | `id` (an id, or `null`), `window`? | Gives the focus to a widget, or (null with a window) takes it away there (P3.9, `input.md`). |
+| `input.simulate` | `window`, `event` | Hands a window an input event as if the user had made it, on either backend (P3.9, `input.md`). Handled after the batch's commands. |
 | `app.quit` | none | Ends the UI loop. The commands after it in the batch are not applied. |
 
 For `append` and `insert` the child must exist, have no parent and not be a window's root; the parent must be a container; the child must not be the parent or one of its ancestors (`cycle`); a scroll view takes one child; and the tree may not become deeper than 64 levels counting the child's own subtree (`limit`).
@@ -49,13 +51,18 @@ The set the MVP needs (P3.10 draws them; P3.11 and P3.13 add text editing and th
 
 | Type | Container | Properties |
 |---|---|---|
-| `label` | no | `text` (string) |
-| `button` | no | `label` (string), `enabled` (bool) |
-| `progress_bar` | no | `value` (number, 0 to 1) |
-| `column`, `row` | yes | `gap`, `padding` (numbers, 0 to 10,000) |
-| `scroll_view` | yes, one child | none yet |
-| `checkbox` | no | `label` (string), `checked`, `enabled` (bool) |
-| `text_input` | no | `text`, `placeholder` (strings), `enabled` (bool) |
+| `label` | no | `text` (string), `grow` |
+| `button` | no | `label` (string), `enabled` (bool), `grow` |
+| `progress_bar` | no | `value` (number, 0 to 1), `grow` |
+| `column`, `row` | yes | `gap`, `padding` (numbers, 0 to 10,000), `grow` |
+| `scroll_view` | yes, one child | `grow` |
+| `checkbox` | no | `label` (string), `checked`, `enabled` (bool), `grow` |
+| `text_input` | no | `text`, `placeholder` (strings), `enabled` (bool), `grow` |
+| `menu_item` | no | `label`, `shortcut` (strings; the shortcut is only drawn, at the right, the application handles the keys), `checked`, `enabled` (bool), `grow` (P3.12a) |
+| `menu_separator` | no | `grow` (P3.12a) |
+| `canvas` | no | `width`, `height` (numbers, 0 to 10,000), `ops` (a draw list, checked when set: see `canvas.md`), `grow` (P3.13) |
+
+`grow` (a number from 0 to 1000, 0 by default; P3.7) is how much of the space left over in its parent a widget takes, in proportion to its siblings'. How widgets are placed is in `layout.md`.
 
 A string is at most 64 KiB; a window title at most 1 KiB; a window size is above 0 and at most 100,000.
 
@@ -94,6 +101,8 @@ Everything comes back through the event queue (`shim-abi.md`), as discrete event
 It marks the moment the batch's commands took effect (see the contract).
 
 **`app.quit`**: `{"type": "app.quit"}`, when the command was applied. The UI loop then ends in order (this is not a failure), and later `raphp_send` calls return `CLOSED`. Events can still be read.
+
+**Input events** (P3.9; `pointer.move`, `pointer.leave`, `pointer.down`, `pointer.up`, `click`, `scroll`, `key.down`, `key.up`, `focus.changed`) are listed in `input.md`, and the text events (`text.changed`, `text.submitted`) in `text-input.md`.
 
 **Window events** (window backend only, P3.6; details in `shim-abi.md`): `{"type":"window.close_requested","window":1}` (the user asked to close: nothing is closed until PHP sends `window.destroy`), `{"type":"window.focus","window":1,"focused":true}`, `{"type":"window.resized","window":1,"width":480.0,"height":320.0,"scale":1.0}` (logical pixels; continuous, so only the latest is kept) and `{"type":"window.scale","window":1,"scale":2.0}`. After `window.destroy` no event about that window is queued (rule 4 below).
 

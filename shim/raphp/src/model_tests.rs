@@ -1091,3 +1091,60 @@ fn a_window_destroyed_in_the_same_batch_needs_no_frame() {
 
     assert_eq!(outcome.dirty, vec![2], "only the window that still exists");
 }
+
+#[test]
+fn a_canvas_takes_a_draw_list_that_is_checked_when_it_is_set_and_refused_whole_when_it_is_wrong() {
+    let mut model = tree();
+    let list = json!([{"op": "rect", "x": 0, "y": 0, "w": 10, "h": 10, "fill": "#FF0000"}]);
+
+    let events = run(
+        &mut model,
+        2,
+        json!([
+            {"op": "widget.create", "id": 20, "type": "canvas", "props": {"width": 100, "height": 50, "ops": list}},
+            {"op": "widget.set", "id": 20, "props": {"ops": [{"op": "circle", "x": 1, "y": 1}]}},
+            {"op": "widget.set", "id": 20, "props": {"ops": "rect"}},
+            {"op": "widget.set", "id": 20, "props": {"ops": [], "width": -1}},
+            {"op": "widget.set", "id": 20, "props": {"label": "x"}},
+            {"op": "widget.create", "id": 21, "type": "canvas", "props": {"ops": [{"op": "line"}]}},
+        ]),
+    );
+
+    assert_eq!(
+        errors(&events),
+        [
+            (1, "bad_prop"),
+            (2, "bad_prop"),
+            (3, "bad_prop"),
+            (4, "unknown_prop"),
+            (5, "bad_prop"),
+        ]
+        .map(|(index, code)| (index, code.to_owned()))
+        .to_vec()
+    );
+    let message = events.iter().find(|event| event["index"] == 1).unwrap()["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        message.contains("ops[0]: circle needs \"r\""),
+        "the message says what is wrong with which operation: {message}"
+    );
+    assert_eq!(
+        model.prop(20, "ops"),
+        Some(list),
+        "a refused list changed nothing, nor did a set with one bad property"
+    );
+    assert_eq!(model.prop(20, "width"), Some(json!(100)));
+    assert!(
+        model.widget_view(21).is_none(),
+        "and a canvas with a bad list was not created"
+    );
+
+    run(
+        &mut model,
+        3,
+        json!([{"op": "widget.set", "id": 20, "props": {"ops": null}}]),
+    );
+    assert_eq!(model.prop(20, "ops"), None, "null clears the drawing");
+}

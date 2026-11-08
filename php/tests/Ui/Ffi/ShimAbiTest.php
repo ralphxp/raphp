@@ -415,7 +415,7 @@ final class ShimAbiTest extends TestCase
         self::assertSame([80, 60], [$width->cdata, $height->cdata]);
         $pixels = $ffi->new("uint8_t[{$size}]");
         self::assertSame($size, $ffi->raphp_headless_frame($shim, 1, $pixels, $size, null, null));
-        self::assertSame("\xff\xff\xff\xff", FFI::string($pixels, 4), 'blank white until drawing exists');
+        self::assertSame("\xff\xff\xff\xff", FFI::string($pixels, 4), 'the corner, where nothing is drawn, is white');
         self::assertSame(-1, $ffi->raphp_headless_frame($shim, 9, null, 0, null, null), 'no such window');
         $ffi->raphp_shutdown($shim);
     }

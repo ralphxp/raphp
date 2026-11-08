@@ -5,6 +5,7 @@
 //! gives the batch an id, which the shim repeats in every error it reports and in the `batch.done` event, so
 //! PHP can tie them to the batch (R15). The checks are strict: an unknown field is an error, not ignored.
 
+use crate::input::{InputEvent, parse_input};
 use serde_json::{Map, Value};
 
 /// The largest batch, in bytes (my number: 200 commands encode to about 40 µs, so this is a very large batch).
@@ -212,6 +213,30 @@ pub(crate) enum Command {
     WidgetDestroy {
         id: u64,
     },
+    /// Gives the focus to a widget, or (with null and a window) takes it away in that window.
+    WidgetFocus {
+        id: Option<u64>,
+        window: Option<u64>,
+    },
+    /// Shows a widget tree above a window's content, at a position (`docs/protocol/overlay.md`).
+    OverlayShow {
+        window: u64,
+        widget: u64,
+        x: f64,
+        y: f64,
+        /// A widget of the window to put the overlay under (a menu under its menu bar button); then `x` and `y` are
+        /// not needed.
+        anchor: Option<u64>,
+    },
+    /// Takes an overlay away; the widget stays alive.
+    OverlayHide {
+        widget: u64,
+    },
+    /// Hands the window an input event as if the user had made it (`docs/protocol/input.md`).
+    InputSimulate {
+        window: u64,
+        event: InputEvent,
+    },
     AppQuit,
     /// Exists only in test builds: panics inside the model, to prove that a bug there is contained.
     #[cfg(any(test, feature = "test-hooks"))]
@@ -321,6 +346,34 @@ impl<'a> Fields<'a> {
                 )),
             },
         }
+    }
+
+    /// A finite number of reasonable size (a position on a window, which may be a little outside it).
+    fn position(&mut self, name: &'static str) -> Result<f64> {
+        match self.raw(name).map(Value::as_f64) {
+            Some(Some(number)) if number.is_finite() && number.abs() <= MAX_WINDOW_SIZE => {
+                Ok(number)
+            }
+            Some(_) => Err(CommandError::new(
+                ErrorCode::BadField,
+                format!(
+                    "\"{name}\" must be a number between -{MAX_WINDOW_SIZE} and {MAX_WINDOW_SIZE}"
+                ),
+            )),
+            None => Err(CommandError::new(
+                ErrorCode::MissingField,
+                format!("\"{name}\" is missing"),
+            )),
+        }
+    }
+
+    /// Like `position`, but the field may be absent.
+    fn optional_position(&mut self, name: &'static str) -> Result<Option<f64>> {
+        if self.map.get(name).is_none() {
+            return Ok(None);
+        }
+
+        self.position(name).map(Some)
     }
 
     fn object(&mut self, name: &'static str) -> Result<Map<String, Value>> {
@@ -464,6 +517,54 @@ pub(crate) fn parse_command(value: &Value) -> Result<Command> {
         "widget.destroy" => Command::WidgetDestroy {
             id: fields.id("id")?,
         },
+        "widget.focus" => Command::WidgetFocus {
+            id: fields.nullable_id("id")?,
+            window: fields.optional_u64("window")?,
+        },
+        "overlay.show" => {
+            let window = fields.id("window")?;
+            let widget = fields.id("widget")?;
+            let anchor = fields.optional_u64("anchor")?;
+            let (x, y) = (
+                fields.optional_position("x")?,
+                fields.optional_position("y")?,
+            );
+            let (x, y) = match (x, y, anchor) {
+                (Some(x), Some(y), _) => (x, y),
+                (None, None, Some(_)) => (0.0, 0.0),
+                _ => {
+                    return Err(CommandError::new(
+                        ErrorCode::MissingField,
+                        "overlay.show needs \"x\" and \"y\", or an \"anchor\"",
+                    )
+                    .about(widget));
+                }
+            };
+
+            Command::OverlayShow {
+                window,
+                widget,
+                x,
+                y,
+                anchor,
+            }
+        }
+        "overlay.hide" => Command::OverlayHide {
+            widget: fields.id("widget")?,
+        },
+        "input.simulate" => {
+            let window = fields.id("window")?;
+            let event = fields.raw("event").ok_or_else(|| {
+                CommandError::new(ErrorCode::MissingField, "\"event\" is missing").about(window)
+            })?;
+
+            Command::InputSimulate {
+                window,
+                event: parse_input(event).map_err(|reason| {
+                    CommandError::new(ErrorCode::BadField, reason).about(window)
+                })?,
+            }
+        }
         "app.quit" => Command::AppQuit,
         #[cfg(any(test, feature = "test-hooks"))]
         "test.panic" => Command::TestPanic,

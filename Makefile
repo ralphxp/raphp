@@ -11,7 +11,7 @@ BIN := vendor/bin
 RUST_DIR := shim
 
 .DEFAULT_GOAL := help
-.PHONY: help install check fast cs fix stan test test-fast bench rust shim shim-test glibc header window-test
+.PHONY: help install check changed fast cs fix stan test test-fast bench rust shim shim-test glibc header window-test
 
 help: ## Show this help
 	@grep -E '^[a-z]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*## "} {printf "  %-8s %s\n", $$1, $$2}'
@@ -19,7 +19,10 @@ help: ## Show this help
 install: ## Install PHP dependencies
 	composer install --no-interaction
 
-check: cs stan shim shim-test test rust ## Run every check (what CI runs)
+changed: ## Run only the tests and checks for what changed since the last commit (what to use while working and to finish a step)
+	python3 tools/test-changed.py
+
+check: cs stan shim shim-test test rust ## Run every check, the whole suite from phase 0 (what CI runs; for a phase checkpoint, not for every step)
 
 fast: cs stan test-fast ## Quick check while working: skips the slow tests (about 6 s of tests instead of 31)
 

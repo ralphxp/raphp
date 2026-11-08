@@ -16,7 +16,16 @@ libc = "0.2"
 serde_json = "1"
 # The window backend (P3.6, D52). winit gives windows and input on Wayland and X11; softbuffer puts a CPU-drawn picture on a window.
 winit = "0.30"
+# The system clipboard on Wayland (P3.11b): arboard does not work on GNOME, which offers no data-control protocol (F7).
+smithay-clipboard = "0.7"
 softbuffer = "0.4"
+# Drawing (P3.8, D54): tiny-skia rasterizes on the CPU and cosmic-text shapes and draws text.
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd"] }
+cosmic-text = "0.19"
+# Where the caret may stand and what one key press deletes (P3.11): grapheme clusters and words. Already a dependency of cosmic-text.
+unicode-segmentation = "1"
+# Layout (P3.7, D53): the flexbox subset only. Grid, floats, calc and the CSS parser are left out.
+taffy = { version = "0.15", default-features = false, features = ["std", "flexbox", "taffy_tree"] }
 
 [features]
 # Compiles in a command that panics, so the tests can prove a panic is contained. Never enabled in a build for PHP.
@@ -24,3 +33,7 @@ test-hooks = []
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+
+[dev-dependencies]
+# The golden images of the drawing tests are PNG files.
+tiny-skia = { version = "0.11", default-features = false, features = ["std", "simd", "png-format"] }

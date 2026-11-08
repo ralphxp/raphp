@@ -16,6 +16,7 @@ use crate::backend::{Backend, BackendError};
 use crate::clock::{Clock, ManualClock};
 use crate::diagnostics::Diagnostics;
 use crate::events::{ContinuousKind, Event, EventClass};
+use crate::input::Interaction;
 use crate::model::Model;
 use crate::protocol::parse_batch;
 use crate::shim::RaphpShim;
@@ -40,6 +41,10 @@ fn the_window_events_have_the_documented_shape() {
     assert_eq!(
         json_of(&focus_event(3, true)),
         json!({"type": "window.focus", "window": 3, "focused": true})
+    );
+    assert_eq!(
+        json_of(&focus_event(3, false)),
+        json!({"type": "window.focus", "window": 3, "focused": false})
     );
     assert_eq!(
         json_of(&scale_event(3, 1.5)),
@@ -97,7 +102,7 @@ impl Backend for Refusing {
 
     fn set_title(&mut self, _id: u64, _title: &str) {}
 
-    fn draw(&mut self, _id: u64, _model: &Model) {}
+    fn draw(&mut self, _id: u64, _model: &Model, _view: &Interaction) {}
 
     fn advance_clock(&mut self, _millis: u64) -> bool {
         false
@@ -135,7 +140,7 @@ impl Backend for Recording {
         self.titles.push((id, title.to_owned()));
     }
 
-    fn draw(&mut self, _id: u64, _model: &Model) {}
+    fn draw(&mut self, _id: u64, _model: &Model, _view: &Interaction) {}
 
     fn advance_clock(&mut self, _millis: u64) -> bool {
         false

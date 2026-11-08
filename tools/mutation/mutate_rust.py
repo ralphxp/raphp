@@ -20,12 +20,39 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def cargo_test(work: Path, timeout: int) -> tuple[int, str]:
+# The test modules that can notice a change to a source file. A mutant is first run against these only (a few seconds
+# instead of the whole suite); one that survives is run once more against everything before it is called a survivor.
+FOCUS = {
+    'input.rs': ['input_tests', 'headless_tests', 'draw_tests', 'text_input_tests'],
+    'input/editing.rs': ['text_input_tests', 'edit_tests', 'draw_tests', 'input_tests'],
+    'editing.rs': ['text_input_tests', 'edit_tests', 'draw_tests', 'input_tests'],
+    'edit.rs': ['edit_tests', 'text_input_tests'],
+    'clipboard.rs': ['text_input_tests'],
+    'canvas.rs': ['canvas_tests', 'draw_tests', 'model_tests'],
+    'draw.rs': ['draw_tests'],
+    'text.rs': ['draw_tests'],
+    'layout.rs': ['layout_tests', 'input_tests', 'draw_tests'],
+    'model.rs': ['model_tests', 'input_tests', 'text_input_tests', 'contract_tests', 'headless_tests', 'window_tests'],
+    'protocol.rs': ['model_tests', 'input_tests'],
+    'backend.rs': ['backend_tests', 'headless_tests', 'draw_tests'],
+    'surface.rs': ['backend_tests', 'headless_tests', 'draw_tests'],
+    'config.rs': ['backend_tests', 'headless_tests'],
+    'clock.rs': ['backend_tests', 'headless_tests'],
+    'window.rs': ['window_tests'],
+    'shim.rs': ['headless_tests', 'tests', 'contract_tests'],
+    'events.rs': ['event_tests', 'contract_tests'],
+    'diagnostics.rs': ['contract_tests', 'headless_tests', 'model_tests'],
+}
+
+
+def cargo_test(work: Path, timeout: int, modules: list[str] | None = None) -> tuple[int, str]:
     os = __import__('os')
     env = {**os.environ, 'CARGO_TARGET_DIR': os.environ.get('RAPHP_MUTATION_TARGET') or str(work / 'target')}
+    command = ['cargo', 'test', '-p', 'raphp-shim', '--lib', '--offline']
+    if modules:
+        command += ['--', *[f'{module}::' for module in modules]]
     try:
-        done = subprocess.run(['cargo', 'test', '-p', 'raphp-shim', '--lib', '--offline'], cwd=work / 'shim', env=env,
-                              capture_output=True, timeout=timeout)
+        done = subprocess.run(command, cwd=work / 'shim', env=env, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
         return 124, 'timeout'
     return done.returncode, (done.stdout + done.stderr).decode('utf-8', 'replace')
@@ -55,7 +82,12 @@ def main() -> int:
                 continue
             path.write_text(original.replace(old, new))
             try:
-                code, output = cargo_test(work, 120)
+                code, output = cargo_test(work, 120, FOCUS.get(file))
+                compiled = 'error[E' not in output and 'error: could not compile' not in output
+                if code == 0 and compiled and FOCUS.get(file):
+                    # It passed the focused tests: make sure no other test notices it before it is called a survivor.
+                    path.write_text(original.replace(old, new))
+                    code, output = cargo_test(work, 120)
             finally:
                 path.write_text(original)
             if 'error[E' in output or 'error: could not compile' in output:

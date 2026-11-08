@@ -11,8 +11,11 @@ use std::time::Duration;
 
 use crate::clock::{Clock, ManualClock};
 use crate::config::Config;
+use crate::draw::render;
+use crate::input::Interaction;
 use crate::model::Model;
 use crate::surface::{Surface, WHITE};
+use crate::text::TextRenderer;
 
 /// Why a backend refused to make or resize a window.
 #[derive(Debug, PartialEq, Eq)]
@@ -49,7 +52,7 @@ pub(crate) trait Backend {
     fn set_title(&mut self, id: u64, title: &str);
 
     /// Draws one frame of the window. Until drawing exists (P3.8) that is a blank window.
-    fn draw(&mut self, id: u64, model: &Model);
+    fn draw(&mut self, id: u64, model: &Model, view: &Interaction);
 
     /// Moves a manual clock forward; false when the clock is the real one.
     fn advance_clock(&mut self, millis: u64) -> bool;
@@ -85,6 +88,8 @@ pub(crate) struct HeadlessBackend {
     scale: f64,
     frame_interval: Duration,
     budget_bytes: usize,
+    /// The bundled font, whatever the machine has: a headless picture is the same everywhere.
+    text: Arc<TextRenderer>,
 }
 
 impl HeadlessBackend {
@@ -95,6 +100,7 @@ impl HeadlessBackend {
             scale: config.scale,
             frame_interval: config.frame_interval,
             budget_bytes: config.surface_budget_bytes,
+            text: TextRenderer::bundled(),
         }
     }
 
@@ -162,9 +168,31 @@ impl Backend for HeadlessBackend {
 
     fn set_title(&mut self, _id: u64, _title: &str) {}
 
-    fn draw(&mut self, id: u64, _model: &Model) {
+    fn draw(&mut self, id: u64, model: &Model, view: &Interaction) {
+        let size = self
+            .shared
+            .lock()
+            .get(&id)
+            .map(|surface| (surface.width, surface.height));
+        let Some(size) = size else {
+            return;
+        };
+
+        // A window with nothing in it is white; drawing it needs no fonts.
+        let has_root = model
+            .window_content(id)
+            .is_some_and(|(_, _, root)| root.is_some());
+        let picture = if has_root {
+            render(model, id, size, self.scale, &self.text, view)
+        } else {
+            None
+        };
+
         if let Some(surface) = self.shared.lock().get_mut(&id) {
-            surface.clear(WHITE);
+            match picture {
+                Some(picture) if surface.replace_pixels(picture.data()) => {}
+                _ => surface.clear(WHITE),
+            }
         }
     }
 

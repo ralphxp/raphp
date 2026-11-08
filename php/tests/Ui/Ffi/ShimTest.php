@@ -300,6 +300,37 @@ final class ShimTest extends AsyncTestCase
         self::assertSame(['redraws_requested' => 2, 'frames_drawn' => 1], $windows['1'], 'no time passed, so the second frame is still waiting');
     }
 
+    public function testTypingIntoATextInputReachesPhpAsEventsAndAValueBuiltBeforeTheTypingIsRefused(): void
+    {
+        $shim = $this->start();
+        $recorder = new ShimEventRecorder($shim);
+        $shim->send([
+            ['op' => 'window.create', 'id' => 1, 'width' => 300, 'height' => 100],
+            ['op' => 'widget.create', 'id' => 1, 'type' => 'text_input'],
+            ['op' => 'window.set_root', 'id' => 1, 'widget' => 1],
+            ['op' => 'widget.focus', 'id' => 1],
+        ]);
+        $shim->send([['op' => 'input.simulate', 'window' => 1, 'event' => ['kind' => 'text', 'text' => 'héllo']]]);
+
+        $events = $recorder->until(ShimEventRecorder::ofType('text.changed'));
+        $changed = array_values(array_filter($events, static fn(ShimEvent $event): bool => $event->type === 'text.changed'))[0];
+        self::assertSame('héllo', $changed->fields['text']);
+        self::assertSame(1, $changed->fields['revision']);
+        self::assertSame(6, $changed->fields['caret'], 'a byte offset: the é is two bytes');
+
+        // PHP built a value from state older than the typing: it is refused, and what was typed stays.
+        $stale = $shim->send([['op' => 'widget.set', 'id' => 1, 'props' => ['text' => 'old'], 'base_rev' => 0]]);
+        $events = $recorder->until(ShimEventRecorder::batchDone($stale));
+        $codes = array_map(static fn(ShimEvent $event): mixed => $event->fields['code'] ?? null, array_filter($events, static fn(ShimEvent $event): bool => $event->type === 'error'));
+        self::assertContains('stale_text', $codes);
+
+        // One that carries the revision PHP last saw is applied.
+        $fresh = $shim->send([['op' => 'widget.set', 'id' => 1, 'props' => ['text' => 'new'], 'base_rev' => 1]]);
+        $events = $recorder->until(ShimEventRecorder::batchDone($fresh));
+        $errors = array_filter($events, static fn(ShimEvent $event): bool => $event->type === 'error' && ($event->fields['batch'] ?? null) === $fresh);
+        self::assertSame([], array_values($errors));
+    }
+
     public function testABadConfigurationIsAStartErrorWithTheShimsReason(): void
     {
         $this->assertStartFails(['backend' => 'window', 'refresh_hz' => 30], 'applies only to the headless backend');

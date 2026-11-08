@@ -9,9 +9,11 @@ use crate::config::{BackendKind, Config};
 use crate::diagnostics::Diagnostics;
 use crate::events::{Event, EventQueue};
 use crate::health::Health;
+use crate::input::Interaction;
 use crate::model::{EventSink, Model};
 use crate::protocol::{Batch, parse_batch};
 use crate::status::{RaphpStatus, ShimError};
+use crate::text::TextRenderer;
 use crate::ui_thread::{StopOutcome, StopSignal, UiThread};
 use crate::window;
 
@@ -388,6 +390,7 @@ fn draw_due(
     last_frame: &mut HashMap<u64, Duration>,
     backend: &mut dyn Backend,
     model: &Model,
+    interaction: &Interaction,
     diagnostics: &Diagnostics,
 ) -> Option<Duration> {
     let interval = backend.frame_interval();
@@ -399,10 +402,17 @@ fn draw_due(
             .get(&window)
             .map_or(Duration::ZERO, |last| *last + interval);
         if now >= due {
-            backend.draw(window, model);
+            backend.draw(window, model, interaction);
             diagnostics.frame_drawn(window);
             last_frame.insert(window, now);
             pending.remove(&window);
+
+            // Something on the window is still changing by itself (a hover fading, a progress bar sweeping): it
+            // needs the next frame, which the pace above allows one interval after this one.
+            if interaction.animating(model, window) {
+                diagnostics.redraw_requested(window);
+                pending.insert(window);
+            }
         } else {
             next_due = Some(next_due.map_or(due, |earlier| earlier.min(due)));
         }
@@ -423,15 +433,19 @@ fn ui_loop(
     stop: &StopSignal,
 ) {
     let mut sink = QueueSink(events);
+    let mut interaction = Interaction::new();
+    let ruler = TextRenderer::bundled(); // the headless backend's font, so that what is hit is what is drawn
     let mut pending: BTreeSet<u64> = BTreeSet::new();
     let mut last_frame: HashMap<u64, Duration> = HashMap::new();
 
     while !stop.requested() {
+        interaction.set_time(backend.clock().now());
         let next_due = draw_due(
             &mut pending,
             &mut last_frame,
             backend.as_mut(),
             &model,
+            &interaction,
             diagnostics,
         );
 
@@ -455,8 +469,22 @@ fn ui_loop(
             None => return,
             Some(Msg::Wake) => {}
             Some(Msg::Batch(batch)) => {
+                interaction.set_time(backend.clock().now());
                 let outcome = model.apply_batch(batch, &mut sink, backend.as_mut());
                 pending.extend(outcome.dirty);
+
+                // What the batch left of the user's interaction (a destroyed widget had the focus), then what
+                // the batch asked of it (a focus, a simulated click): each tells the loop which windows need a
+                // frame, and the request is counted before the events that follow from it.
+                let mut redraw = |window: u64| {
+                    diagnostics.redraw_requested(window);
+                    pending.insert(window);
+                };
+                interaction.sync(&model, &mut sink, &mut redraw);
+                for request in outcome.requests {
+                    interaction.request(request, &mut model, &*ruler, &mut sink, &mut redraw);
+                }
+
                 pending.retain(|window| model.has_window(*window));
                 last_frame.retain(|window, _| model.has_window(*window));
 
@@ -469,11 +497,13 @@ fn ui_loop(
             }
             Some(Msg::Advance { millis, ack }) => {
                 let moved = backend.advance_clock(millis);
+                interaction.set_time(backend.clock().now());
                 draw_due(
                     &mut pending,
                     &mut last_frame,
                     backend.as_mut(),
                     &model,
+                    &interaction,
                     diagnostics,
                 );
                 let _ = ack.send(moved);

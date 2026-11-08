@@ -39,4 +39,15 @@ impl Surface {
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
+
+    /// Replaces the picture with RGBA bytes of the same size. False (and no change) when the size differs.
+    pub fn replace_pixels(&mut self, rgba: &[u8]) -> bool {
+        if rgba.len() != self.pixels.len() {
+            return false;
+        }
+
+        self.pixels.copy_from_slice(rgba);
+
+        true
+    }
 }
