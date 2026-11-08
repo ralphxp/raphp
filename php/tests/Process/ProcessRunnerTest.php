@@ -21,6 +21,7 @@ use Raphp\Process\OutputStream;
 use Raphp\Process\ProcessResult;
 use Raphp\Process\ProcessRunner;
 use Raphp\Tests\Support\AsyncTestCase;
+use Raphp\Tests\Support\ShimFixture;
 use RuntimeException;
 use Throwable;
 
@@ -588,5 +589,32 @@ final class ProcessRunnerTest extends AsyncTestCase
         delay(0);
 
         self::assertGreaterThan(30, $ticks);
+    }
+
+    public function testACommandInheritsNoneOfTheMastersDescriptors(): void
+    {
+        // amphp/process replaces every descriptor the master has open, up to the highest, with /dev/null in the command (checked for R17), so the runner needs no sweep of its own.
+        $file = tempnam(sys_get_temp_dir(), 'raphp-inherit');
+        self::assertNotFalse($file);
+        $before = array_keys(ShimFixture::descriptors());
+        $opened = fopen($file, 'r');
+        self::assertNotFalse($opened);
+        $number = array_values(array_diff(array_keys(ShimFixture::descriptors()), $before))[0] ?? null;
+        self::assertNotNull($number);
+        $duplicate = fopen("php://fd/{$number}", 'r'); // inheritable, like the duplicate that watches the shim (R17)
+        self::assertNotFalse($duplicate);
+
+        try {
+            $result = $this->runner()->run(['sh', '-c', 'for f in /proc/$$/fd/*; do readlink "$f"; done']);
+        } finally {
+            fclose($duplicate);
+            fclose($opened);
+            unlink($file);
+        }
+
+        self::assertSame(0, $result->exitCode);
+        self::assertStringNotContainsString($file, $result->stdout, 'the master\'s open file did not reach the command');
+        self::assertStringNotContainsString('anon_inode', $result->stdout, 'nor an eventfd or epoll of the master');
+        self::assertStringNotContainsString('memfd', $result->stdout, 'nor PHP\'s opcache lock');
     }
 }

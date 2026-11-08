@@ -13,11 +13,19 @@ use crate::events::EventQueue;
 use crate::protocol::MAX_BATCH_BYTES;
 use crate::shim::{RaphpShim, Shim};
 use crate::status::RaphpStatus;
-use crate::{raphp_diagnostics, raphp_last_error, raphp_poll, raphp_send, raphp_shutdown};
+use crate::{
+    raphp_diagnostics, raphp_headless_advance, raphp_last_error, raphp_poll, raphp_send,
+    raphp_shutdown,
+};
 
 fn start() -> *mut RaphpShim {
     let events = Arc::new(EventQueue::new().expect("an eventfd"));
-    let shim = Shim::start_model(events, Duration::from_secs(2)).expect("starts");
+    let shim = Shim::start_model(
+        events,
+        Duration::from_secs(2),
+        &crate::config::Config::default(),
+    )
+    .expect("starts");
 
     Box::into_raw(Box::new(RaphpShim { shim }))
 }
@@ -149,6 +157,10 @@ fn the_golden_cases_produce_exactly_the_documented_events_and_counters() {
 
         assert_eq!(Value::Array(events), case["events"], "{name}: events");
 
+        if !quits {
+            // The frames are drawn after the done event: a barrier makes sure they have been.
+            assert_eq!(unsafe { raphp_headless_advance(shim, 0) }, RaphpStatus::Ok);
+        }
         let mut actual = diagnostics(shim);
         if !quits {
             actual["batches"] = json!(actual["batches"].as_u64().unwrap() - 1); // the marker batch
@@ -441,6 +453,29 @@ fn once_a_done_event_is_read_the_diagnostics_already_include_that_batch() {
         );
         assert_eq!(counters["widgets"], index);
         assert_eq!(counters["commands_applied"], index);
+    }
+
+    unsafe { raphp_shutdown(shim) };
+}
+
+#[test]
+fn once_a_done_event_is_read_the_redraws_it_asked_for_are_already_counted() {
+    let shim = start();
+
+    for index in 1..=60_u64 {
+        send(
+            shim,
+            &json!({"batch": index, "commands": [{"op": "window.create", "id": index}]}),
+        );
+        until_done(shim, index);
+
+        // No barrier: the request is counted before the done event, the frame comes later.
+        let json = diagnostics(shim);
+        assert_eq!(
+            json["windows"][index.to_string()]["redraws_requested"],
+            1,
+            "after the done event of batch {index}"
+        );
     }
 
     unsafe { raphp_shutdown(shim) };

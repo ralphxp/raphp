@@ -1,4 +1,4 @@
-# The shim's command protocol (PHP to shim), ABI version 0.3
+# The shim's command protocol (PHP to shim), ABI version 0.4
 
 Step P3.3. This is how PHP describes windows and widgets to the shim, what the shim answers with, and the written contract for the order of things (R15). The functions that carry it are in `shim-abi.md`. The golden cases that pin it are in `golden/shim-commands.json`; a test sends each case through the real C functions and compares every event.
 
@@ -29,8 +29,8 @@ An object with `"op"` and the fields the operation takes. **A field the operatio
 
 | Operation | Fields | What it does |
 |---|---|---|
-| `window.create` | `id`, `title`?, `width`?, `height`? | Creates a window record (defaults: title empty, 800 by 600). The real window comes with P3.6. |
-| `window.set` | `id`, at least one of `title`, `width`, `height` | Changes only what is named. |
+| `window.create` | `id`, `title`?, `width`?, `height`? | Creates a window (defaults: title empty, 800 by 600). Refused with `limit` if its picture would not fit the headless budget. It asks for its first frame. |
+| `window.set` | `id`, at least one of `title`, `width`, `height` | Changes only what is named. A new size makes a new picture (refused with `limit`, changing nothing, if it would not fit the budget) and asks for a frame; a new title does not. |
 | `window.set_root` | `id`, `widget` (an id, or `null`) | Makes a widget the window's root. The widget must have no parent and not be a root already. The window must have no root: clear it first with `null`, which leaves the widget alive and parentless. |
 | `window.destroy` | `id` | Destroys the window **and its tree**. |
 | `widget.create` | `id`, `type`, `props`? | Creates a widget with no parent. Every property is checked first: if one is bad, nothing is created. |
@@ -114,7 +114,7 @@ The events PHP reads and the commands PHP sends race: the user clicks while PHP 
  "windows": {"1": {"redraws_requested": 0, "frames_drawn": 0}}}
 ```
 
-`redraws_requested` and `frames_drawn` stay at 0 until drawing exists (P3.8); P3.6 and P3.10 use them to test that an idle window draws nothing (F8).
+`redraws_requested` counts the batches that left the window needing a frame, and `frames_drawn` the frames drawn (see "Frame pacing" in `shim-abi.md`); P3.6 and P3.10 use them to test that an idle window draws nothing (F8). `redraws_requested` is exact once a batch's `batch.done` has been read; `frames_drawn` needs the headless barrier first.
 
 ## Limits (all my numbers, unmeasured)
 

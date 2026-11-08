@@ -27,16 +27,28 @@ parameters:
       message: '#^Call to an undefined method FFI::prctl\(\)\.$#'
       path: php/src/Runtime/Libc/ParentDeathSignal.php
       count: 1
+    # The same for the two libc functions that keep descriptors from reaching a started process (R17, D51).
+    -
+      message: '#^Call to an undefined method FFI::(close_range|fcntl)\(\)\.$#'
+      path: php/src/Runtime/Libc/DescriptorGuard.php
+      count: 3
     # The shim's C functions and the status constants of its header are created by FFI at load time, so
     # static analysis cannot know them. Only the files that talk to the shim may use them, and only names
-    # that start with raphp_ or RAPHP_. P3.5 adds the loader's directory (php/src/Ui/Ffi) to these paths.
+    # that start with raphp_ or RAPHP_.
     -
       message: '#^Call to an undefined method FFI::raphp_[a-z_]+\(\)\.$#'
       paths:
+        - php/src/Ui/Ffi/*
         - php/tests/Ui/Ffi/*
     -
       message: '#^Access to an undefined property FFI::\$RAPHP_[A-Z_]+\.$#'
       paths:
+        - php/tests/Ui/Ffi/*
+    # A C scalar made with $ffi->new() is read through its ->cdata property.
+    -
+      message: '#^Access to an undefined property FFI\\CData::\$cdata\.$#'
+      paths:
+        - php/src/Ui/Ffi/*
         - php/tests/Ui/Ffi/*
 
   # Forbidden calls. These ban by function name: whether the rule can tell a string

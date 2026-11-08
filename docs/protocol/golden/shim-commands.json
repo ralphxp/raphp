@@ -1,5 +1,5 @@
 {
-  "about": "Golden cases for the shim's command protocol (docs/protocol/shim-commands.md). Each case starts a fresh shim, sends the batches in order through raphp_send, and reads every event back through raphp_poll. 'events' are compared as JSON values, with the 'message' field of error events left out (it is for people and may be reworded). 'diagnostics' is what raphp_diagnostics returns afterwards. A case with \"quits\": true ends in app.quit.",
+  "about": "Golden cases for the shim's command protocol (docs/protocol/shim-commands.md). Each case starts a fresh shim, sends the batches in order through raphp_send, and reads every event back through raphp_poll. 'events' are compared as JSON values, with the 'message' field of error events left out (it is for people and may be reworded). 'diagnostics' is what raphp_diagnostics returns afterwards, read after a barrier (raphp_headless_advance with 0) so that the frames due have been drawn. A case with \"quits\": true ends in app.quit.",
   "cases": [
     {
       "name": "an_empty_batch_is_done_at_once",
@@ -24,7 +24,7 @@
         ]}
       ],
       "events": [ {"type": "batch.done", "batch": 1, "applied": 10, "failed": 0} ],
-      "diagnostics": {"batches": 1, "commands_applied": 10, "commands_failed": 0, "widgets": 4, "windows": {"1": {"redraws_requested": 0, "frames_drawn": 0}}}
+      "diagnostics": {"batches": 1, "commands_applied": 10, "commands_failed": 0, "widgets": 4, "windows": {"1": {"redraws_requested": 1, "frames_drawn": 1}}}
     },
     {
       "name": "errors_are_reported_one_by_one_and_the_batch_goes_on",
@@ -77,7 +77,7 @@
         {"type": "error", "batch": 3, "index": 7, "op": "window.create", "code": "id_reused", "target": 1},
         {"type": "batch.done", "batch": 3, "applied": 3, "failed": 5}
       ],
-      "diagnostics": {"batches": 1, "commands_applied": 3, "commands_failed": 5, "widgets": 0, "windows": {"2": {"redraws_requested": 0, "frames_drawn": 0}}}
+      "diagnostics": {"batches": 1, "commands_applied": 3, "commands_failed": 5, "widgets": 0, "windows": {"2": {"redraws_requested": 1, "frames_drawn": 1}}}
     },
     {
       "name": "structure_rules_cycles_parents_containers_indexes",

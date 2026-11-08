@@ -7,6 +7,9 @@
 //! - **The UI thread never calls PHP.**
 
 mod abi;
+mod backend;
+mod clock;
+mod config;
 mod diagnostics;
 #[allow(
     dead_code,
@@ -18,19 +21,25 @@ mod model;
 mod protocol;
 mod shim;
 mod status;
+mod surface;
 mod ui_thread;
 
 pub use abi::{
-    raphp_abi_version, raphp_diagnostics, raphp_event_fd, raphp_init, raphp_last_error,
-    raphp_max_event_bytes, raphp_next_event_size, raphp_poll, raphp_send, raphp_shutdown,
+    raphp_abi_version, raphp_diagnostics, raphp_event_fd, raphp_headless_advance,
+    raphp_headless_frame, raphp_init, raphp_last_error, raphp_max_event_bytes,
+    raphp_next_event_size, raphp_poll, raphp_send, raphp_shutdown,
 };
 pub use shim::RaphpShim;
 pub use status::RaphpStatus;
 
 #[cfg(test)]
+mod backend_tests;
+#[cfg(test)]
 mod contract_tests;
 #[cfg(test)]
 mod event_tests;
+#[cfg(test)]
+mod headless_tests;
 #[cfg(test)]
 mod model_tests;
 #[cfg(test)]

@@ -41,16 +41,14 @@ impl Diagnostics {
         self.lock().remove(&id);
     }
 
-    /// Called by the drawing code (P3.8) when something asks for a redraw.
-    #[allow(dead_code, reason = "called by the drawing code of step P3.8")]
+    /// Called by the model when a batch leaves a window needing a frame.
     pub fn redraw_requested(&self, id: u64) {
         if let Some(counters) = self.lock().get_mut(&id) {
             counters.redraws_requested += 1;
         }
     }
 
-    /// Called by the drawing code (P3.8) after a frame is drawn.
-    #[allow(dead_code, reason = "called by the drawing code of step P3.8")]
+    /// Called by the UI loop after a frame is drawn.
     pub fn frame_drawn(&self, id: u64) {
         if let Some(counters) = self.lock().get_mut(&id) {
             counters.frames_drawn += 1;

@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 
+use crate::backend::HeadlessBackend;
+use crate::config::Config;
 use crate::diagnostics::Diagnostics;
 use crate::events::Event;
 use crate::model::{MAX_DEPTH, MAX_WIDGETS, MAX_WINDOWS, Model};
@@ -16,11 +18,20 @@ fn model() -> Model {
     Model::new(Arc::new(Diagnostics::default()))
 }
 
+/// The headless backend, as the loop would own it (a fresh one each time is enough for the model's rules).
+fn test_backend() -> HeadlessBackend {
+    HeadlessBackend::new(&Config::default(), Arc::default())
+}
+
 /// Applies the commands as a batch with the given id and returns the events as JSON values.
 fn run(model: &mut Model, batch: u64, commands: Value) -> Vec<Value> {
     let text = json!({"batch": batch, "commands": commands}).to_string();
     let mut events: Vec<Event> = Vec::new();
-    model.apply_batch(parse_batch(&text).expect("a batch"), &mut events);
+    model.apply_batch(
+        parse_batch(&text).expect("a batch"),
+        &mut events,
+        &mut test_backend(),
+    );
 
     events
         .iter()
@@ -357,6 +368,7 @@ fn an_anonymous_batch_reports_errors_without_a_batch_id_and_ends_without_a_done_
     model.apply_batch(
         parse_batch(r#"[{"op":"widget.destroy","id":3}]"#).unwrap(),
         &mut events,
+        &mut test_backend(),
     );
 
     assert_eq!(events.len(), 1);
@@ -847,7 +859,7 @@ fn app_quit_stops_the_batch_and_says_so() {
     let text = r#"{"batch":3,"commands":[{"op":"widget.create","id":1,"type":"label"},{"op":"app.quit"},{"op":"widget.create","id":2,"type":"label"}]}"#;
     let mut events: Vec<Event> = Vec::new();
 
-    let outcome = model.apply_batch(parse_batch(text).unwrap(), &mut events);
+    let outcome = model.apply_batch(parse_batch(text).unwrap(), &mut events, &mut test_backend());
 
     assert!(outcome.quit);
     assert_eq!(
@@ -874,6 +886,7 @@ fn the_diagnostics_count_batches_commands_and_widgets() {
     model.apply_batch(
         parse_batch(r#"{"batch":1,"commands":[{"op":"window.create","id":1},{"op":"widget.create","id":1,"type":"label"},{"op":"widget.destroy","id":9}]}"#).unwrap(),
         &mut events,
+        &mut test_backend(),
     );
 
     let json: Value = serde_json::from_str(&diagnostics.to_json()).unwrap();
@@ -883,7 +896,30 @@ fn the_diagnostics_count_batches_commands_and_widgets() {
     assert_eq!(json["widgets"], 1);
     assert_eq!(
         json["windows"]["1"],
-        json!({"redraws_requested": 0, "frames_drawn": 0})
+        json!({"redraws_requested": 1, "frames_drawn": 0}),
+        "the new window asked for its first frame; the model alone draws none"
+    );
+}
+
+#[test]
+fn a_batch_reports_which_windows_need_a_frame_once_each() {
+    let mut model = model();
+    let mut events: Vec<Event> = Vec::new();
+    let text = r#"{"batch":1,"commands":[{"op":"window.create","id":1},{"op":"window.create","id":2},{"op":"widget.create","id":1,"type":"label"},{"op":"window.set_root","id":1,"widget":1},{"op":"widget.set","id":1,"props":{"text":"a"}},{"op":"widget.set","id":1,"props":{"text":"b"}}]}"#;
+
+    let outcome = model.apply_batch(parse_batch(text).unwrap(), &mut events, &mut test_backend());
+
+    assert_eq!(
+        outcome.dirty,
+        vec![1, 2],
+        "each window once, however many commands touched it"
+    );
+
+    let quiet = model.apply_batch(parse_batch("[]").unwrap(), &mut events, &mut test_backend());
+    assert_eq!(
+        quiet.dirty,
+        Vec::<u64>::new(),
+        "the next batch starts clean"
     );
 }
 
@@ -1043,4 +1079,15 @@ fn insert_puts_a_child_at_an_index_and_refuses_one_beyond_the_end() {
         vec![(2, "bad_index".to_owned())],
         "index 5 is past the four children"
     );
+}
+
+#[test]
+fn a_window_destroyed_in_the_same_batch_needs_no_frame() {
+    let mut model = model();
+    let mut events: Vec<Event> = Vec::new();
+    let text = r#"[{"op":"window.create","id":1},{"op":"window.destroy","id":1},{"op":"window.create","id":2}]"#;
+
+    let outcome = model.apply_batch(parse_batch(text).unwrap(), &mut events, &mut test_backend());
+
+    assert_eq!(outcome.dirty, vec![2], "only the window that still exists");
 }

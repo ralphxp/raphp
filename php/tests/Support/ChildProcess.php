@@ -23,11 +23,12 @@ final class ChildProcess
      * @param list<string> $arguments
      * @param list<int> $signalsAfterReady
      * @param string $readyMarker the text on the child's stdout that means "ready"
+     * @param list<string> $phpOptions extra `-d name=value` settings for the child's PHP, as written after -d
      */
-    public function run(string $script, array $arguments = [], array $signalsAfterReady = [], float $timeout = 15.0, string $readyMarker = "READY\n"): ChildResult
+    public function run(string $script, array $arguments = [], array $signalsAfterReady = [], float $timeout = 15.0, string $readyMarker = "READY\n", array $phpOptions = []): ChildResult
     {
         $process = proc_open(
-            [PHP_BINARY, '-d', 'display_errors=stderr', '-d', 'error_reporting=-1', $script, ...$arguments],
+            [PHP_BINARY, '-d', 'display_errors=stderr', '-d', 'error_reporting=-1', ...array_merge(...array_map(static fn(string $option): array => ['-d', $option], $phpOptions)), $script, ...$arguments],
             [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes,
         );

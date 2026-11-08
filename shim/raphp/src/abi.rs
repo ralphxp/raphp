@@ -9,6 +9,7 @@ use std::ptr;
 
 use std::sync::Arc;
 
+use crate::config::Config;
 use crate::events::{EventQueue, MAX_EVENT_BYTES, Polled};
 use crate::shim::{DEFAULT_SHUTDOWN_TIMEOUT, RaphpShim, Shim};
 use crate::status::{RaphpStatus, ShimError};
@@ -17,7 +18,7 @@ use crate::ui_thread::panic_message;
 /// The ABI version: major in the high 16 bits, minor in the low 16. A minor bump adds functions; a major
 /// bump breaks. Version 0.x is not stable.
 const ABI_MAJOR: u32 = 0;
-const ABI_MINOR: u32 = 3;
+const ABI_MINOR: u32 = 4;
 
 thread_local! {
     /// The reason the last call failed when there is no handle to keep it on (a failed `raphp_init`).
@@ -129,8 +130,9 @@ pub extern "C" fn raphp_abi_version() -> u32 {
 pub unsafe extern "C" fn raphp_init(cfg: *const c_char, len: usize) -> *mut RaphpShim {
     let created = catch_unwind(AssertUnwindSafe(|| {
         // SAFETY: forwarded from this function's contract.
-        // The configuration is checked now and read from step P3.3 on, when there is something to configure.
-        unsafe { utf8(cfg, len, "the configuration") }?;
+        // SAFETY: forwarded from this function's contract.
+        let text = unsafe { utf8(cfg, len, "the configuration") }?;
+        let config = Config::parse(text).map_err(ShimError::invalid)?;
 
         let events = EventQueue::new().map_err(|error| {
             ShimError::new(
@@ -139,7 +141,7 @@ pub unsafe extern "C" fn raphp_init(cfg: *const c_char, len: usize) -> *mut Raph
             )
         })?;
 
-        Shim::start_model(Arc::new(events), DEFAULT_SHUTDOWN_TIMEOUT).map_err(|error| {
+        Shim::start_model(Arc::new(events), DEFAULT_SHUTDOWN_TIMEOUT, &config).map_err(|error| {
             ShimError::new(
                 RaphpStatus::Panicked,
                 format!("cannot start the UI thread: {error}"),
@@ -339,4 +341,72 @@ pub unsafe extern "C" fn raphp_diagnostics(
     });
 
     json.map_or(0, |length| usize::try_from(length).unwrap_or(0))
+}
+
+/// Headless backend only: moves its clock forward by `millis`, then waits until the UI thread has applied everything
+/// sent before this call and drawn the frames that are then due. With 0 it is only that wait: a barrier, which is how a
+/// test knows that a batch has taken effect. **This is the one call that waits for the UI thread.** A shim on another
+/// backend returns `RAPHP_STATUS_UNSUPPORTED`; if the UI thread is stuck (for example waiting for events nobody reads)
+/// it gives up after 10 seconds with `RAPHP_STATUS_TIMED_OUT`.
+///
+/// # Safety
+/// `shim` must come from `raphp_init` and not have been shut down.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn raphp_headless_advance(
+    shim: *const RaphpShim,
+    millis: u64,
+) -> RaphpStatus {
+    guarded(shim, |shim| shim.headless_advance(millis))
+}
+
+/// Headless backend only: copies the picture of a window (RGBA, 8 bits a channel, rows from the top) into `out`, at most
+/// `cap` bytes, and returns the **full** length in bytes, which is `width * height * 4`; the size in pixels goes to
+/// `width` and `height` when they are not null. A negative value is a `RaphpStatus`: `UNSUPPORTED` on another backend,
+/// `INVALID_ARGUMENT` for a window that does not exist. Reads what was last drawn, so call `raphp_headless_advance`
+/// with 0 first to be sure the frame you want has been drawn. Works on a poisoned shim.
+///
+/// # Safety
+/// `out` must point to `cap` writable bytes (or be null with `cap` 0); `width` and `height` must be null or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn raphp_headless_frame(
+    shim: *const RaphpShim,
+    window: u64,
+    out: *mut u8,
+    cap: usize,
+    width: *mut u32,
+    height: *mut u32,
+) -> isize {
+    let result = guarded_allow_poisoned(shim, |shim| {
+        if out.is_null() && cap > 0 {
+            return Err(ShimError::invalid(
+                "the output buffer is null but its capacity is not 0",
+            ));
+        }
+
+        let mut empty = [0u8; 0];
+        let buffer: &mut [u8] = if cap == 0 {
+            &mut empty
+        } else {
+            // SAFETY: the caller guarantees `cap` writable bytes at `out`.
+            unsafe { std::slice::from_raw_parts_mut(out, cap) }
+        };
+
+        let (w, h, length) = shim.headless_frame(window, buffer)?;
+        // SAFETY: the caller guarantees that a non-null `width` or `height` is writable.
+        unsafe {
+            if let Some(width) = width.as_mut() {
+                *width = w;
+            }
+            if let Some(height) = height.as_mut() {
+                *height = h;
+            }
+        }
+
+        Ok(isize::try_from(length).unwrap_or(isize::MAX))
+    });
+
+    match result {
+        Ok(length) => length,
+        Err(status) => status as isize,
+    }
 }

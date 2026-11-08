@@ -151,3 +151,33 @@ size_t raphp_max_event_bytes(void);
 size_t raphp_diagnostics(const RaphpShim *shim,
                          char *out,
                          size_t cap);
+
+/*
+ Headless backend only: moves its clock forward by `millis`, then waits until the UI thread has applied everything
+ sent before this call and drawn the frames that are then due. With 0 it is only that wait: a barrier, which is how a
+ test knows that a batch has taken effect. **This is the one call that waits for the UI thread.** A shim on another
+ backend returns `RAPHP_STATUS_UNSUPPORTED`; if the UI thread is stuck (for example waiting for events nobody reads)
+ it gives up after 10 seconds with `RAPHP_STATUS_TIMED_OUT`.
+
+ # Safety
+ `shim` must come from `raphp_init` and not have been shut down.
+ */
+RaphpStatus raphp_headless_advance(const RaphpShim *shim,
+                                   uint64_t millis);
+
+/*
+ Headless backend only: copies the picture of a window (RGBA, 8 bits a channel, rows from the top) into `out`, at most
+ `cap` bytes, and returns the **full** length in bytes, which is `width * height * 4`; the size in pixels goes to
+ `width` and `height` when they are not null. A negative value is a `RaphpStatus`: `UNSUPPORTED` on another backend,
+ `INVALID_ARGUMENT` for a window that does not exist. Reads what was last drawn, so call `raphp_headless_advance`
+ with 0 first to be sure the frame you want has been drawn. Works on a poisoned shim.
+
+ # Safety
+ `out` must point to `cap` writable bytes (or be null with `cap` 0); `width` and `height` must be null or writable.
+ */
+ptrdiff_t raphp_headless_frame(const RaphpShim *shim,
+                               uint64_t window,
+                               uint8_t *out,
+                               size_t cap,
+                               uint32_t *width,
+                               uint32_t *height);

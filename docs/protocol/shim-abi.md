@@ -1,15 +1,15 @@
-# The shim's C ABI (`libraphp`), version 0.3
+# The shim's C ABI (`libraphp`), version 0.4
 
-Steps P3.1 to P3.3. The commands that `raphp_send` carries, and what the shim answers with, are in `shim-commands.md`. The header is `shim/include/raphp.h`, generated from the Rust sources by `make header` (cbindgen plus a small filter, see "The header") and committed. PHP loads it with `FFI::cdef` and loads `libraphp.so`. This page is the contract: what each function promises, what a failure looks like, and what happens when the shim itself fails. Where something is decided now but wired in a later step, it says so.
+Steps P3.1 to P3.4. The commands that `raphp_send` carries, and what the shim answers with, are in `shim-commands.md`. The header is `shim/include/raphp.h`, generated from the Rust sources by `make header` (cbindgen plus a small filter, see "The header") and committed. PHP loads it with `FFI::cdef` and loads `libraphp.so`. This page is the contract: what each function promises, what a failure looks like, and what happens when the shim itself fails. Where something is decided now but wired in a later step, it says so.
 
 ## The functions (all of the ABI so far)
 
-Version 0.1 (P3.1) had the first five; 0.2 (P3.2) added the four that carry events to PHP; 0.3 (P3.3) adds `raphp_diagnostics` and the status `CLOSED`.
+Version 0.1 (P3.1) had the first five; 0.2 (P3.2) added the four that carry events to PHP; 0.3 (P3.3) added `raphp_diagnostics` and the status `CLOSED`; 0.4 (P3.4) adds the configuration of `raphp_init` and the two headless control functions.
 
 | Function | What it does |
 |---|---|
-| `uint32_t raphp_abi_version(void)` | `major << 16 \| minor`. 0.3 is `3`. PHP compares it before anything else. A minor bump adds functions; a major bump breaks. 0.x is not stable. |
-| `RaphpShim* raphp_init(const char* cfg, size_t len)` | Starts the shim and its UI thread. `cfg` is UTF-8, may be empty, and may be null when `len` is 0. Returns **null** on failure; the reason is `raphp_last_error(NULL, ...)` for the calling thread. (In PHP a null pointer arrives as `null`.) The configuration is only checked for UTF-8 so far; it is read from P3.3 on. |
+| `uint32_t raphp_abi_version(void)` | `major << 16 \| minor`. 0.4 is `4`. PHP compares it before anything else. A minor bump adds functions; a major bump breaks. 0.x is not stable. |
+| `RaphpShim* raphp_init(const char* cfg, size_t len)` | Starts the shim and its UI thread. `cfg` is UTF-8 JSON (see "The configuration"), may be empty, and may be null when `len` is 0. Returns **null** on failure, for a bad configuration too; the reason is `raphp_last_error(NULL, ...)` for the calling thread. (In PHP a null pointer arrives as `null`.) |
 | `RaphpStatus raphp_send(const RaphpShim*, const char* batch, size_t len)` | Sends a batch of commands (UTF-8 JSON) and returns at once; the UI thread applies it. A text that is not a batch is refused here (`INVALID_ARGUMENT`); problems inside the commands come back as events. `CLOSED` once the shim has stopped taking commands. See `shim-commands.md`. |
 | `size_t raphp_last_error(const RaphpShim*, char* out, size_t cap)` | Copies the last error's text into `out` (UTF-8, **not** NUL-terminated, at most `cap` bytes, never cutting a character) and returns the **full** length, so PHP can ask again with a bigger buffer. A null `shim` means "the reason the calling thread's last `raphp_init` failed". A null `out` only returns the length. Works on a poisoned shim. |
 | `RaphpStatus raphp_shutdown(RaphpShim*)` | Asks the UI thread to stop, waits a bounded time, frees the handle. The handle is invalid afterwards whatever the result. Works on a poisoned shim. |
@@ -18,6 +18,8 @@ Version 0.1 (P3.1) had the first five; 0.2 (P3.2) added the four that carry even
 | `intptr_t raphp_poll(const RaphpShim*, char* out, size_t cap)` | Copies whole events into `out`, one JSON line each, every line ending in `\n`, as many as fit, in order. Returns the bytes written; `0` when nothing is queued; `RAPHP_STATUS_BUFFER_TOO_SMALL` (-6) when the **next** event is larger than `cap` (see "A large event"). Any other negative value is a `RaphpStatus`. A null `out` is allowed only with `cap` 0. Works on a poisoned shim. |
 | `size_t raphp_next_event_size(const RaphpShim*)` | The size in bytes, newline included, of the event at the head of the queue; 0 when empty or the handle is null. After -6 it is the buffer size to poll with. Works on a poisoned shim. |
 | `size_t raphp_diagnostics(const RaphpShim*, char* out, size_t cap)` | One line of JSON with the counters (batches, commands applied and failed, widgets, and per window `redraws_requested` and `frames_drawn`), read like `raphp_last_error`: the full length is returned. Read-only, works on a poisoned shim, never waits for the UI thread. See `shim-commands.md`. |
+| `RaphpStatus raphp_headless_advance(const RaphpShim*, uint64_t millis)` | Headless backend: moves its clock forward and waits until the UI thread has applied everything sent before and drawn the frames then due. With 0 it is a barrier. **The one call that waits for the UI thread** (it gives up after 10 s with `TIMED_OUT`). See "The headless backend". |
+| `intptr_t raphp_headless_frame(const RaphpShim*, uint64_t window, uint8_t* out, size_t cap, uint32_t* width, uint32_t* height)` | Headless backend: copies the picture of a window (RGBA, rows from the top) into `out` and returns its full length, `width * height * 4`; the size in pixels goes to `width` and `height` when not null. Negative values are statuses (`INVALID_ARGUMENT` for no such window). Works on a poisoned shim. |
 | `size_t raphp_max_event_bytes(void)` | The largest event the shim queues, newline included (1 MiB). A poll buffer of this size can never be too small. |
 
 The draft in `FRAMEWORK.md` 7.3 had `raphp_shutdown` returning `void` and `raphp_send` returning `int`; both return `RaphpStatus`, and `raphp_poll` returns `intptr_t`.
@@ -121,6 +123,29 @@ Tested at the Rust level (the large event stays, the one behind it arrives, in o
 ### The failure event
 
 When the shim is poisoned it queues one last discrete event, `{"type":"shim.failed","reason":"..."}`, whatever the limits, raises the wake-up, and accepts no more events (the queue is closed to producers, so none waits). PHP drains what is there, including that event, then sees 0. The reason is escaped as JSON.
+
+## The configuration
+
+`raphp_init` takes a JSON object, or nothing for the defaults. It is strict like the commands: an unknown key is refused, and so is a value out of range (`raphp_init` returns null and `raphp_last_error(NULL, ...)` says why).
+
+| Key | Meaning | Values (default) |
+|---|---|---|
+| `backend` | What the UI thread draws on | `"headless"` (the default). `"window"` is refused until P3.6 builds it. |
+| `refresh_hz` | The most frames a window gets per second: the headless stand-in for the monitor's refresh rate | 1 to 1000 (60) |
+| `scale` | Physical pixels per logical pixel (HiDPI) | 0.25 to 8 (1) |
+| `surface_budget_mib` | The most memory all the headless pictures may take together | 1 to 4096 (256) |
+
+## The headless backend (P3.4)
+
+The same UI loop, the same model and the same commands run on a backend with no window system, so that everything from PHP to the shim can be tested on a machine with no display (the plan's done-when for P3.4). What differs is only what is underneath:
+
+- **A clock that only moves when told to.** Time starts at zero and passes only through `raphp_headless_advance`. Nothing sleeps: what depends on time (the frame pace now, animations later) is tested exactly.
+- **A picture in memory for each window**, RGBA with 8 bits per channel, of the window's size times `scale`, rounded up and at least one pixel each way. Until drawing exists (P3.8) every frame is a blank white picture; the machinery around it is real.
+- **A budget.** The pictures of all windows together may not exceed `surface_budget_mib`. A `window.create` or a resizing `window.set` that would exceed it is refused as a command error (`limit`, with the sizes in the message) and changes nothing: no window, or the old picture kept.
+
+**Frame pacing (F8).** A command batch that really changes what a window shows asks for a frame for that window, once per batch however many of its commands touched the window. What counts as a change: a new window; a different size (a different title does not, the OS draws that); a root set or cleared; a widget attached, inserted, removed or destroyed in the window; a property set to a value it does not already have. Setting a property to the value it already has, an empty batch, a refused command, and anything done to a widget that is on no window ask for nothing. A window gets a frame at once if it has had none within the frame interval, and otherwise when the interval has passed (counted from the previous frame, not from the request); however many requests came in between, it gets one frame. Each window has its own pace. A destroyed window draws no more.
+
+**Waiting for the UI thread, and reading the counters.** Applying batches and drawing frames happen on the UI thread, after `raphp_send` has returned. A headless test that must know a batch has taken effect calls `raphp_headless_advance(shim, 0)`: it returns when everything sent before has been applied and the frames due have been drawn, with no polling. The diagnostics have two kinds of number. `redraws_requested`, like `batches` and `widgets`, is updated before the batch's `batch.done` event is queued, so it is exact once the done event has been read. `frames_drawn` is not ordered with any event: use the barrier first.
 
 ## The glibc floor (R23, D21)
 

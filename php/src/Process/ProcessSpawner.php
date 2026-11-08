@@ -8,6 +8,8 @@ use Amp\ByteStream\ReadableResourceStream;
 use Psr\Log\LoggerInterface;
 use Psr\Log\LogLevel;
 use Raphp\Ipc\Transport\StreamTransport;
+use Raphp\Runtime\Libc\DescriptorGuard;
+use Raphp\Runtime\Libc\LibcException;
 
 /**
  * Starts worker processes (FRAMEWORK 5.1). This is the only code allowed to call `proc_open`.
@@ -21,6 +23,8 @@ use Raphp\Ipc\Transport\StreamTransport;
  *   master goes away.
  * - **Descriptors 0 to 2:** stdin is `/dev/null`; stdout and stderr are pipes that are read
  *   from the start to the end of the process ({@see OutputCapture}).
+ * - **Nothing else is inherited** (R17, D51): just before the start, every descriptor of the master from 3 up is
+ *   marked close-on-exec ({@see DescriptorGuard}), so the worker has only what the call below names.
  * - **The command line** gets `--role=worker`, `--name=<name>` and `--parent-pid=<this pid>`, which
  *   the worker passes to {@see OrphanGuard}.
  */
@@ -29,10 +33,11 @@ final readonly class ProcessSpawner
     public function __construct(
         private ChannelFactory $channels,
         private LoggerInterface $logger,
+        private DescriptorGuard $descriptors = new DescriptorGuard(),
     ) {}
 
     /**
-     * @throws SpawnException when the channel cannot be made or the process cannot be started
+     * @throws SpawnException when the channel cannot be made, descriptors cannot be kept from the worker (no FFI or libc), or the process cannot be started
      */
     public function spawn(WorkerSpec $spec): WorkerHandle
     {
@@ -54,6 +59,17 @@ final readonly class ProcessSpawner
         }
 
         array_push($arguments, ...$spec->extraArguments);
+
+        // R17, D51: whatever the master holds (the shim's descriptors, the window system's, PHP's own) must not
+        // reach the worker. Only the descriptors named below are given to it.
+        try {
+            $this->descriptors->closeOnExecFrom();
+        } catch (LibcException $exception) {
+            fclose($channel->child);
+            fclose($channel->parent);
+
+            throw new SpawnException("could not start the worker \"{$spec->name}\": {$exception->getMessage()}", 0, $exception);
+        }
 
         $pipes = [];
         error_clear_last();

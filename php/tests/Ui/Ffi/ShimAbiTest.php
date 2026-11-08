@@ -70,7 +70,7 @@ final class ShimAbiTest extends TestCase
         self::assertIsInt($version);
 
         self::assertSame(0, $version >> 16, 'major');
-        self::assertSame(3, $version & 0xFFFF, 'minor');
+        self::assertSame(4, $version & 0xFFFF, 'minor');
     }
 
     public function testTheShimStartsAcceptsAnEmptyBatchAndShutsDown(): void
@@ -313,6 +313,7 @@ final class ShimAbiTest extends TestCase
         $ffi = $this->ffi();
         $shim = $ffi->raphp_init('', 0);
         $this->sendAndWait($ffi, $shim, 1, [['op' => 'window.create', 'id' => 1], ['op' => 'widget.create', 'id' => 1, 'type' => 'label']]);
+        self::assertSame(0, $ffi->raphp_headless_advance($shim, 0), 'a barrier: the first frame has been drawn');
 
         $needed = $ffi->raphp_diagnostics($shim, null, 0);
         self::assertIsInt($needed);
@@ -328,7 +329,7 @@ final class ShimAbiTest extends TestCase
         self::assertSame(1, $diagnostics['batches']);
         self::assertSame(2, $diagnostics['commands_applied']);
         self::assertSame(1, $diagnostics['widgets']);
-        self::assertSame(['1' => ['redraws_requested' => 0, 'frames_drawn' => 0]], $diagnostics['windows']);
+        self::assertSame(['1' => ['redraws_requested' => 1, 'frames_drawn' => 1]], $diagnostics['windows']);
         $ffi->raphp_shutdown($shim);
     }
 
@@ -348,5 +349,85 @@ final class ShimAbiTest extends TestCase
         self::assertSame(-7, $ffi->raphp_send($shim, '[]', 2), 'the shim stopped taking commands');
         self::assertStringContainsString('stopped taking commands', $this->lastError($ffi, $shim));
         self::assertSame(0, $ffi->raphp_shutdown($shim), 'an orderly end, not a timeout');
+    }
+
+    /**
+     * @param array<array-key, mixed> $commands
+     */
+    private function send(FFI $ffi, mixed $shim, int $batch, array $commands): void
+    {
+        $text = json_encode(['batch' => $batch, 'commands' => $commands], JSON_THROW_ON_ERROR);
+        self::assertSame(0, $ffi->raphp_send($shim, $text, strlen($text)));
+    }
+
+    /**
+     * @return array{int, int} how many redraws a window asked for and how many frames were drawn
+     */
+    private function windowCounters(FFI $ffi, mixed $shim, int $window): array
+    {
+        $needed = $ffi->raphp_diagnostics($shim, null, 0);
+        self::assertIsInt($needed);
+        if ($needed < 1) {
+            self::fail('the diagnostics are empty');
+        }
+
+        $buffer = $ffi->new("char[{$needed}]");
+        $ffi->raphp_diagnostics($shim, $buffer, $needed);
+        $diagnostics = json_decode(FFI::string($buffer, $needed), true, 512, JSON_THROW_ON_ERROR);
+        self::assertIsArray($diagnostics);
+        $windows = $diagnostics['windows'];
+        self::assertIsArray($windows);
+        $entry = $windows[(string) $window];
+        self::assertIsArray($entry);
+        $requested = $entry['redraws_requested'];
+        $drawn = $entry['frames_drawn'];
+        self::assertIsInt($requested);
+        self::assertIsInt($drawn);
+
+        return [$requested, $drawn];
+    }
+
+    public function testTheHeadlessBackendDrawsFramesAtTheClocksPaceAndTheyCanBeRead(): void
+    {
+        $ffi = $this->ffi();
+        $config = '{"refresh_hz":100,"scale":2}';
+        $shim = $ffi->raphp_init($config, strlen($config));
+        self::assertNotNull($shim);
+
+        $this->send($ffi, $shim, 1, [
+            ['op' => 'window.create', 'id' => 1, 'width' => 40, 'height' => 30],
+            ['op' => 'widget.create', 'id' => 1, 'type' => 'label', 'props' => ['text' => 'a']],
+            ['op' => 'window.set_root', 'id' => 1, 'widget' => 1],
+        ]);
+        self::assertSame(0, $ffi->raphp_headless_advance($shim, 0));
+        self::assertSame([1, 1], $this->windowCounters($ffi, $shim, 1), 'the first frame is drawn at once');
+
+        $this->send($ffi, $shim, 2, [['op' => 'widget.set', 'id' => 1, 'props' => ['text' => 'b']]]);
+        self::assertSame(0, $ffi->raphp_headless_advance($shim, 9));
+        self::assertSame([2, 1], $this->windowCounters($ffi, $shim, 1), '9 ms after the last frame: still waiting');
+        self::assertSame(0, $ffi->raphp_headless_advance($shim, 1));
+        self::assertSame([2, 2], $this->windowCounters($ffi, $shim, 1), '10 ms: the frame is drawn');
+
+        $width = $ffi->new('uint32_t');
+        $height = $ffi->new('uint32_t');
+        $size = $ffi->raphp_headless_frame($shim, 1, null, 0, FFI::addr($width), FFI::addr($height));
+        self::assertSame(80 * 60 * 4, $size, 'physical pixels: twice the logical size');
+        self::assertSame([80, 60], [$width->cdata, $height->cdata]);
+        $pixels = $ffi->new("uint8_t[{$size}]");
+        self::assertSame($size, $ffi->raphp_headless_frame($shim, 1, $pixels, $size, null, null));
+        self::assertSame("\xff\xff\xff\xff", FFI::string($pixels, 4), 'blank white until drawing exists');
+        self::assertSame(-1, $ffi->raphp_headless_frame($shim, 9, null, 0, null, null), 'no such window');
+        $ffi->raphp_shutdown($shim);
+    }
+
+    public function testABadConfigurationIsRefusedWithAReason(): void
+    {
+        $ffi = $this->ffi();
+        $config = '{"backend":"window"}';
+
+        $shim = $ffi->raphp_init($config, strlen($config));
+
+        self::assertNull($shim);
+        self::assertStringContainsString('not built yet', $this->lastError($ffi, null));
     }
 }

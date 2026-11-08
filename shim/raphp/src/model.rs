@@ -2,11 +2,12 @@
 //! system in it: the UI thread owns one, applies batches to it in order, and reports what happened as events.
 //! The rules, with their reasons, are in `docs/protocol/shim-commands.md`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 
+use crate::backend::Backend;
 use crate::diagnostics::Diagnostics;
 use crate::events::Event;
 use crate::protocol::{
@@ -178,6 +179,8 @@ struct Window {
 pub(crate) struct Outcome {
     /// `app.quit` was applied: the UI loop must end.
     pub quit: bool,
+    /// The windows whose picture is now out of date and need a frame, each once however many commands touched it.
+    pub dirty: Vec<u64>,
 }
 
 pub(crate) struct Model {
@@ -185,6 +188,8 @@ pub(crate) struct Model {
     windows: BTreeMap<u64, Window>,
     last_widget_id: u64,
     last_window_id: u64,
+    /// Windows changed since the last batch ended (see [`Outcome::dirty`]).
+    dirty: BTreeSet<u64>,
     diagnostics: Arc<Diagnostics>,
 }
 
@@ -195,6 +200,7 @@ impl Model {
             windows: BTreeMap::new(),
             last_widget_id: 0,
             last_window_id: 0,
+            dirty: BTreeSet::new(),
             diagnostics,
         }
     }
@@ -202,15 +208,20 @@ impl Model {
     /// Applies the commands of a batch in order. A command that fails changes nothing and is reported as an
     /// `error` event naming the batch and the command's place in it; the next command is still applied.
     /// An object-form batch ends with a `batch.done` event, which marks the moment its commands took effect.
-    pub fn apply_batch(&mut self, batch: Batch, sink: &mut dyn EventSink) -> Outcome {
+    pub fn apply_batch(
+        &mut self,
+        batch: Batch,
+        sink: &mut dyn EventSink,
+        backend: &mut dyn Backend,
+    ) -> Outcome {
         let mut applied: u64 = 0;
         let mut failed: u64 = 0;
         let mut quit = false;
         let batch_id = batch.id.map_or(Value::Null, Value::from);
 
         for (index, value) in batch.commands.iter().enumerate() {
-            let result =
-                parse_command(value).and_then(|command| self.execute(command, &mut quit, sink));
+            let result = parse_command(value)
+                .and_then(|command| self.execute(command, &mut quit, sink, backend));
             match result {
                 Ok(()) => applied += 1,
                 Err(error) => {
@@ -241,7 +252,12 @@ impl Model {
             }
         }
 
-        // The counters first: once PHP has read `batch.done`, the diagnostics already include the batch.
+        // The counters first: once PHP has read `batch.done`, the diagnostics already include the batch and the
+        // redraws it asked for. (The frames are drawn later, at the backend's pace.)
+        let dirty: Vec<u64> = std::mem::take(&mut self.dirty).into_iter().collect();
+        for window in &dirty {
+            self.diagnostics.redraw_requested(*window);
+        }
         self.diagnostics.batch_done(applied, failed);
         self.diagnostics.set_widgets(self.widgets.len());
 
@@ -251,7 +267,7 @@ impl Model {
             ));
         }
 
-        Outcome { quit }
+        Outcome { quit, dirty }
     }
 
     fn execute(
@@ -259,12 +275,13 @@ impl Model {
         command: Command,
         quit: &mut bool,
         sink: &mut dyn EventSink,
+        backend: &mut dyn Backend,
     ) -> Result<()> {
         match command {
-            Command::WindowCreate { id, settings } => self.window_create(id, settings),
-            Command::WindowSet { id, settings } => self.window_set(id, settings),
+            Command::WindowCreate { id, settings } => self.window_create(id, settings, backend),
+            Command::WindowSet { id, settings } => self.window_set(id, settings, backend),
             Command::WindowSetRoot { id, widget } => self.window_set_root(id, widget),
-            Command::WindowDestroy { id } => self.window_destroy(id),
+            Command::WindowDestroy { id } => self.window_destroy(id, backend),
             Command::WidgetCreate { id, kind, props } => self.widget_create(id, &kind, props),
             Command::WidgetSet {
                 id,
@@ -292,7 +309,12 @@ impl Model {
 
     // ------------------------------------------------------------ windows
 
-    fn window_create(&mut self, id: u64, settings: WindowSettings) -> Result<()> {
+    fn window_create(
+        &mut self,
+        id: u64,
+        settings: WindowSettings,
+        backend: &mut dyn Backend,
+    ) -> Result<()> {
         if id <= self.last_window_id {
             return Err(CommandError::new(
                 ErrorCode::IdReused,
@@ -312,33 +334,59 @@ impl Model {
             .about(id));
         }
 
+        let (width, height) = (
+            settings.width.unwrap_or(800.0),
+            settings.height.unwrap_or(600.0),
+        );
+        backend
+            .create_window(id, width, height)
+            .map_err(|reason| CommandError::new(ErrorCode::Limit, reason).about(id))?;
+
         self.last_window_id = id;
         self.windows.insert(
             id,
             Window {
                 settings: WindowSettings {
                     title: Some(settings.title.unwrap_or_default()),
-                    width: Some(settings.width.unwrap_or(800.0)),
-                    height: Some(settings.height.unwrap_or(600.0)),
+                    width: Some(width),
+                    height: Some(height),
                 },
                 root: None,
             },
         );
         self.diagnostics.window_created(id);
+        self.dirty.insert(id); // its first frame
 
         Ok(())
     }
 
-    fn window_set(&mut self, id: u64, settings: WindowSettings) -> Result<()> {
+    fn window_set(
+        &mut self,
+        id: u64,
+        settings: WindowSettings,
+        backend: &mut dyn Backend,
+    ) -> Result<()> {
+        let window = self.window_mut(id)?;
+        let width = settings.width.or(window.settings.width).unwrap_or(800.0);
+        let height = settings.height.or(window.settings.height).unwrap_or(600.0);
+        let resized =
+            Some(width) != window.settings.width || Some(height) != window.settings.height;
+
+        if resized {
+            // The new picture first: if it does not fit, nothing about the window changes.
+            backend
+                .resize_window(id, width, height)
+                .map_err(|reason| CommandError::new(ErrorCode::Limit, reason).about(id))?;
+        }
+
         let window = self.window_mut(id)?;
         if settings.title.is_some() {
             window.settings.title = settings.title;
         }
-        if settings.width.is_some() {
-            window.settings.width = settings.width;
-        }
-        if settings.height.is_some() {
-            window.settings.height = settings.height;
+        window.settings.width = Some(width);
+        window.settings.height = Some(height);
+        if resized {
+            self.dirty.insert(id); // a new size needs a new frame; a new title does not
         }
 
         Ok(())
@@ -354,6 +402,7 @@ impl Model {
                 old.root_of = None;
             }
             self.window_mut(id)?.root = None;
+            self.dirty.insert(id);
 
             return Ok(());
         };
@@ -384,11 +433,12 @@ impl Model {
 
         self.widget_mut(widget_id)?.root_of = Some(id);
         self.window_mut(id)?.root = Some(widget_id);
+        self.dirty.insert(id);
 
         Ok(())
     }
 
-    fn window_destroy(&mut self, id: u64) -> Result<()> {
+    fn window_destroy(&mut self, id: u64, backend: &mut dyn Backend) -> Result<()> {
         let root = self.window_mut(id)?.root;
         if let Some(root) = root {
             self.remove_subtree(root);
@@ -396,6 +446,8 @@ impl Model {
 
         self.windows.remove(&id);
         self.diagnostics.window_destroyed(id);
+        backend.destroy_window(id);
+        self.dirty.remove(&id);
 
         Ok(())
     }
@@ -484,12 +536,17 @@ impl Model {
         }
 
         let widget = self.widget_mut(id)?;
+        let mut changed = false;
         for (name, value) in props {
-            if value.is_null() {
-                widget.props.remove(&name);
+            changed |= if value.is_null() {
+                widget.props.remove(&name).is_some()
             } else {
-                widget.props.insert(name, value);
-            }
+                widget.props.insert(name, value.clone()).as_ref() != Some(&value)
+            };
+        }
+
+        if changed {
+            self.mark_dirty(id); // setting what is already there changes nothing and asks for no frame
         }
 
         Ok(())
@@ -572,6 +629,7 @@ impl Model {
             .children
             .insert(position, child_id);
         self.widget_mut(child_id)?.parent = Some(parent_id);
+        self.mark_dirty(parent_id);
 
         Ok(())
     }
@@ -586,19 +644,45 @@ impl Model {
             .about(id));
         };
 
+        let window = self.window_of(id);
         self.detach(id, parent);
+        self.dirty.extend(window);
 
         Ok(())
     }
 
     fn widget_destroy(&mut self, id: u64) -> Result<()> {
         self.widget(id)?;
+        let window = self.window_of(id);
         self.remove_subtree(id);
+        self.dirty.extend(window);
 
         Ok(())
     }
 
     // ------------------------------------------------------------ helpers
+
+    pub fn has_window(&self, id: u64) -> bool {
+        self.windows.contains_key(&id)
+    }
+
+    /// The window whose tree the widget is in, if any.
+    fn window_of(&self, id: u64) -> Option<u64> {
+        let mut current = id;
+        loop {
+            let widget = self.widgets.get(&current)?;
+            match widget.parent {
+                Some(parent) => current = parent,
+                None => return widget.root_of,
+            }
+        }
+    }
+
+    /// Marks the window of this widget as needing a frame (a widget outside every window is on no screen).
+    fn mark_dirty(&mut self, id: u64) {
+        let window = self.window_of(id);
+        self.dirty.extend(window);
+    }
 
     fn detach(&mut self, id: u64, parent: u64) {
         if let Some(parent) = self.widgets.get_mut(&parent) {

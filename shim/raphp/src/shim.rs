@@ -1,8 +1,11 @@
+use std::collections::{BTreeSet, HashMap};
 use std::io;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use crate::backend::{Backend, HeadlessBackend, HeadlessShared};
+use crate::config::{BackendKind, Config};
 use crate::diagnostics::Diagnostics;
 use crate::events::{Event, EventQueue};
 use crate::health::Health;
@@ -16,7 +19,16 @@ pub(crate) enum Msg {
     Batch(Batch),
     /// Look at the stop signal again.
     Wake,
+    /// Move the headless clock forward, draw what is then due, and answer on `ack` (true when the clock moved).
+    /// With 0 it is a barrier: everything sent before it has been applied when the answer comes.
+    Advance {
+        millis: u64,
+        ack: Sender<bool>,
+    },
 }
+
+/// How long a headless control call waits for the UI thread (my number).
+const HEADLESS_WAIT: Duration = Duration::from_secs(10);
 
 /// How long `raphp_shutdown` waits for the UI thread before leaving it behind (my number, unmeasured).
 pub(crate) const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
@@ -30,6 +42,8 @@ pub(crate) struct Shim {
     pub health: Arc<Health>,
     pub events: Arc<EventQueue>,
     pub diagnostics: Arc<Diagnostics>,
+    /// The pictures of the headless windows; none for another backend or a test body.
+    headless: Option<Arc<HeadlessShared>>,
     /// How commands reach the UI thread; none for a shim whose UI thread is a test body.
     commands: Option<Sender<Msg>>,
     ui: Mutex<Option<UiThread>>,
@@ -56,27 +70,38 @@ impl Shim {
     where
         F: FnOnce(Arc<StopSignal>) + Send + 'static,
     {
-        Self::launch(events, shutdown_timeout, None, Arc::default(), body)
+        Self::launch(events, shutdown_timeout, None, Arc::default(), None, body)
     }
 
-    /// Starts the real shim: its UI thread applies the commands it is sent to a [`Model`].
-    pub fn start_model(events: Arc<EventQueue>, shutdown_timeout: Duration) -> io::Result<Self> {
+    /// Starts the real shim: its UI thread applies the commands it is sent to a [`Model`], on the backend the
+    /// configuration names, and draws frames at the backend's pace.
+    pub fn start_model(
+        events: Arc<EventQueue>,
+        shutdown_timeout: Duration,
+        config: &Config,
+    ) -> io::Result<Self> {
         let (commands, receiver) = channel::<Msg>();
         let waker = commands.clone();
         let diagnostics = Arc::new(Diagnostics::default());
         let model = Model::new(diagnostics.clone());
         let queue = events.clone();
+        let loop_diagnostics = diagnostics.clone();
+        let shared = Arc::new(HeadlessShared::default());
+        let backend: Box<dyn Backend> = match config.backend {
+            BackendKind::Headless => Box::new(HeadlessBackend::new(config, shared.clone())),
+        };
 
         Self::launch(
             events,
             shutdown_timeout,
             Some(commands),
             diagnostics,
+            Some(shared),
             move |stop: Arc<StopSignal>| {
                 stop.set_waker(move || {
                     let _ = waker.send(Msg::Wake);
                 });
-                model_loop(&receiver, model, &queue, &stop);
+                ui_loop(&receiver, model, backend, &queue, &loop_diagnostics, &stop);
             },
         )
     }
@@ -86,6 +111,7 @@ impl Shim {
         shutdown_timeout: Duration,
         commands: Option<Sender<Msg>>,
         diagnostics: Arc<Diagnostics>,
+        headless: Option<Arc<HeadlessShared>>,
         body: F,
     ) -> io::Result<Self>
     where
@@ -101,6 +127,7 @@ impl Shim {
             health,
             events,
             diagnostics,
+            headless,
             commands,
             ui: Mutex::new(Some(ui)),
             shutdown_timeout,
@@ -180,6 +207,58 @@ impl Shim {
         })
     }
 
+    /// Headless only: moves the clock forward by `millis` and waits until the UI thread has applied everything
+    /// sent before and drawn the frames that are then due. With 0 it is just that wait: a barrier, which is
+    /// what tests use to know that a batch has taken effect. This one call waits for the UI thread, on purpose.
+    pub fn headless_advance(&self, millis: u64) -> Result<(), ShimError> {
+        let Some(commands) = self.commands.as_ref().filter(|_| self.headless.is_some()) else {
+            return Err(ShimError::new(
+                RaphpStatus::Unsupported,
+                "this shim does not use the headless backend",
+            ));
+        };
+
+        let (ack, answer) = channel();
+        commands.send(Msg::Advance { millis, ack }).map_err(|_| {
+            ShimError::new(RaphpStatus::Closed, "the shim has stopped taking commands")
+        })?;
+
+        match answer.recv_timeout(HEADLESS_WAIT) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(ShimError::new(
+                RaphpStatus::Unsupported,
+                "this shim does not use the headless backend",
+            )),
+            Err(RecvTimeoutError::Timeout) => Err(ShimError::new(
+                RaphpStatus::TimedOut,
+                "the UI thread did not answer in time (is it waiting for the events to be read?)",
+            )),
+            Err(RecvTimeoutError::Disconnected) => Err(ShimError::new(
+                RaphpStatus::Closed,
+                "the UI thread ended before it answered",
+            )),
+        }
+    }
+
+    /// Headless only: copies the picture of a window (RGBA, rows from the top) into `out` and returns its size in
+    /// pixels and its full length in bytes.
+    pub fn headless_frame(
+        &self,
+        window: u64,
+        out: &mut [u8],
+    ) -> Result<(u32, u32, usize), ShimError> {
+        let Some(shared) = &self.headless else {
+            return Err(ShimError::new(
+                RaphpStatus::Unsupported,
+                "this shim does not use the headless backend",
+            ));
+        };
+
+        shared
+            .read(window, out)
+            .ok_or_else(|| ShimError::invalid(format!("there is no window {window}")))
+    }
+
     /// Stops the UI thread, waiting a bounded time. Safe to call on a poisoned shim, whose UI thread has
     /// usually ended already.
     pub fn stop(&self) -> RaphpStatus {
@@ -217,22 +296,104 @@ impl EventSink for QueueSink<'_> {
     }
 }
 
-/// The UI thread of the shim, until the window backends exist (P3.4, P3.6): it applies batches to the model, in
-/// the order they were sent, and ends when asked to stop or when `app.quit` is applied.
-fn model_loop(receiver: &Receiver<Msg>, mut model: Model, events: &EventQueue, stop: &StopSignal) {
+/// Draws the frames that are due. A window that asked for a redraw gets a frame at once if it has not had one
+/// within the frame interval, and otherwise as soon as the interval has passed; however many times it asked in
+/// between, it gets one. Returns when the next pending frame becomes due, if one is waiting.
+fn draw_due(
+    pending: &mut BTreeSet<u64>,
+    last_frame: &mut HashMap<u64, Duration>,
+    backend: &mut dyn Backend,
+    model: &Model,
+    diagnostics: &Diagnostics,
+) -> Option<Duration> {
+    let interval = backend.frame_interval();
+    let now = backend.clock().now();
+    let mut next_due: Option<Duration> = None;
+
+    for window in pending.clone() {
+        let due = last_frame
+            .get(&window)
+            .map_or(Duration::ZERO, |last| *last + interval);
+        if now >= due {
+            backend.draw(window, model);
+            diagnostics.frame_drawn(window);
+            last_frame.insert(window, now);
+            pending.remove(&window);
+        } else {
+            next_due = Some(next_due.map_or(due, |earlier| earlier.min(due)));
+        }
+    }
+
+    next_due
+}
+
+/// The UI thread of the shim until the window backend exists (P3.6): it applies batches to the model in the
+/// order they were sent, draws frames on the backend at its pace, and ends when asked to stop or when `app.quit`
+/// is applied.
+fn ui_loop(
+    receiver: &Receiver<Msg>,
+    mut model: Model,
+    mut backend: Box<dyn Backend>,
+    events: &EventQueue,
+    diagnostics: &Diagnostics,
+    stop: &StopSignal,
+) {
     let mut sink = QueueSink(events);
+    let mut pending: BTreeSet<u64> = BTreeSet::new();
+    let mut last_frame: HashMap<u64, Duration> = HashMap::new();
+
     while !stop.requested() {
-        match receiver.recv() {
-            Ok(Msg::Batch(batch)) => {
-                if model.apply_batch(batch, &mut sink).quit {
+        let next_due = draw_due(
+            &mut pending,
+            &mut last_frame,
+            backend.as_mut(),
+            &model,
+            diagnostics,
+        );
+
+        let message = match next_due {
+            None => receiver.recv().ok(),
+            Some(due) => {
+                let remaining = due.saturating_sub(backend.clock().now());
+                match backend.clock().sleep_budget(remaining) {
+                    Some(budget) => match receiver.recv_timeout(budget) {
+                        Ok(message) => Some(message),
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => None,
+                    },
+                    // Time does not pass by itself: only a message (an advance of the clock) can change anything.
+                    None => receiver.recv().ok(),
+                }
+            }
+        };
+
+        match message {
+            None => return,
+            Some(Msg::Wake) => {}
+            Some(Msg::Batch(batch)) => {
+                let outcome = model.apply_batch(batch, &mut sink, backend.as_mut());
+                pending.extend(outcome.dirty);
+                pending.retain(|window| model.has_window(*window));
+                last_frame.retain(|window, _| model.has_window(*window));
+
+                if outcome.quit {
                     // Asked to stop, by the application's own command: an orderly end, not a failure.
                     stop.request();
 
                     return;
                 }
             }
-            Ok(Msg::Wake) => {}
-            Err(_) => return,
+            Some(Msg::Advance { millis, ack }) => {
+                let moved = backend.advance_clock(millis);
+                draw_due(
+                    &mut pending,
+                    &mut last_frame,
+                    backend.as_mut(),
+                    &model,
+                    diagnostics,
+                );
+                let _ = ack.send(moved);
+            }
         }
     }
 }

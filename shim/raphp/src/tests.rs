@@ -36,7 +36,12 @@ where
 
 fn idle_handle() -> *mut RaphpShim {
     let events = Arc::new(crate::events::EventQueue::new().expect("an eventfd"));
-    let shim = Shim::start_model(events, Duration::from_secs(2)).expect("starts");
+    let shim = Shim::start_model(
+        events,
+        Duration::from_secs(2),
+        &crate::config::Config::default(),
+    )
+    .expect("starts");
 
     Box::into_raw(Box::new(RaphpShim { shim }))
 }
@@ -66,7 +71,7 @@ fn the_abi_version_is_major_then_minor() {
     let version = raphp_abi_version();
 
     assert_eq!(version >> 16, 0, "major");
-    assert_eq!(version & 0xffff, 3, "minor");
+    assert_eq!(version & 0xffff, 4, "minor");
 }
 
 #[test]
@@ -397,7 +402,7 @@ fn every_exported_function_runs_under_catch_unwind() {
     }
 
     assert_eq!(
-        exported, 10,
+        exported, 12,
         "the list of exported functions changed: update the header test and the contract"
     );
 }
