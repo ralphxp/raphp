@@ -1,11 +1,22 @@
 use std::io;
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use crate::events::EventQueue;
+use crate::diagnostics::Diagnostics;
+use crate::events::{Event, EventQueue};
 use crate::health::Health;
+use crate::model::{EventSink, Model};
+use crate::protocol::{Batch, parse_batch};
 use crate::status::{RaphpStatus, ShimError};
 use crate::ui_thread::{StopOutcome, StopSignal, UiThread};
+
+/// What the UI thread is sent.
+pub(crate) enum Msg {
+    Batch(Batch),
+    /// Look at the stop signal again.
+    Wake,
+}
 
 /// How long `raphp_shutdown` waits for the UI thread before leaving it behind (my number, unmeasured).
 pub(crate) const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
@@ -18,13 +29,16 @@ pub struct RaphpShim {
 pub(crate) struct Shim {
     pub health: Arc<Health>,
     pub events: Arc<EventQueue>,
+    pub diagnostics: Arc<Diagnostics>,
+    /// How commands reach the UI thread; none for a shim whose UI thread is a test body.
+    commands: Option<Sender<Msg>>,
     ui: Mutex<Option<UiThread>>,
     shutdown_timeout: Duration,
 }
 
 impl Shim {
-    /// Starts a shim whose UI thread runs `body`. `raphp_init` passes the real UI loop; tests pass
-    /// bodies that panic, return early or refuse to stop.
+    /// Starts a shim whose UI thread runs `body`; tests pass bodies that panic, return early or refuse to stop.
+    #[cfg(test)]
     pub fn start<F>(shutdown_timeout: Duration, body: F) -> io::Result<Self>
     where
         F: FnOnce(Arc<StopSignal>) + Send + 'static,
@@ -33,9 +47,45 @@ impl Shim {
     }
 
     /// The same, with an event queue chosen by the caller (the tests use small limits).
+    #[cfg(test)]
     pub fn start_with_events<F>(
         events: Arc<EventQueue>,
         shutdown_timeout: Duration,
+        body: F,
+    ) -> io::Result<Self>
+    where
+        F: FnOnce(Arc<StopSignal>) + Send + 'static,
+    {
+        Self::launch(events, shutdown_timeout, None, Arc::default(), body)
+    }
+
+    /// Starts the real shim: its UI thread applies the commands it is sent to a [`Model`].
+    pub fn start_model(events: Arc<EventQueue>, shutdown_timeout: Duration) -> io::Result<Self> {
+        let (commands, receiver) = channel::<Msg>();
+        let waker = commands.clone();
+        let diagnostics = Arc::new(Diagnostics::default());
+        let model = Model::new(diagnostics.clone());
+        let queue = events.clone();
+
+        Self::launch(
+            events,
+            shutdown_timeout,
+            Some(commands),
+            diagnostics,
+            move |stop: Arc<StopSignal>| {
+                stop.set_waker(move || {
+                    let _ = waker.send(Msg::Wake);
+                });
+                model_loop(&receiver, model, &queue, &stop);
+            },
+        )
+    }
+
+    fn launch<F>(
+        events: Arc<EventQueue>,
+        shutdown_timeout: Duration,
+        commands: Option<Sender<Msg>>,
+        diagnostics: Arc<Diagnostics>,
         body: F,
     ) -> io::Result<Self>
     where
@@ -50,26 +100,32 @@ impl Shim {
         Ok(Self {
             health,
             events,
+            diagnostics,
+            commands,
             ui: Mutex::new(Some(ui)),
             shutdown_timeout,
         })
     }
 
-    /// Runs a batch of commands. Until the command model exists (P3.3) only the empty batch is accepted.
+    /// Checks the shape of a batch and hands it to the UI thread, which applies it. Problems inside the
+    /// commands come back as events; a batch that is not a batch at all is refused here.
     pub fn send(&self, batch: &str) -> Result<(), ShimError> {
         #[cfg(any(test, feature = "test-hooks"))]
         if let Some(result) = self.test_command(batch) {
             return result;
         }
 
-        if batch.trim() == "[]" {
-            return Ok(());
-        }
+        let parsed = parse_batch(batch).map_err(ShimError::invalid)?;
+        let Some(commands) = &self.commands else {
+            return Err(ShimError::new(
+                RaphpStatus::Unsupported,
+                "this shim has no command loop",
+            ));
+        };
 
-        Err(ShimError::new(
-            RaphpStatus::Unsupported,
-            "commands are not implemented yet (the command model arrives in step P3.3)",
-        ))
+        commands.send(Msg::Batch(parsed)).map_err(|_| {
+            ShimError::new(RaphpStatus::Closed, "the shim has stopped taking commands")
+        })
     }
 
     /// Commands that exist only in test builds, so that the tests can make the shim do things the UI thread
@@ -144,6 +200,39 @@ impl Shim {
 
 /// The UI thread of a shim that has no window system yet: it waits to be told to stop. The real loop
 /// replaces it with the backends (P3.4 and P3.6).
+#[cfg(test)]
 pub(crate) fn idle_ui_body(stop: Arc<StopSignal>) {
     while !stop.wait(Duration::from_millis(250)) {}
+}
+
+/// Where the model's events go: into the shim's queue. A producer may have to wait for PHP (O7), and the
+/// wait ends when the queue is closed.
+struct QueueSink<'a>(&'a EventQueue);
+
+impl EventSink for QueueSink<'_> {
+    fn emit(&mut self, event: Event) {
+        // A refusal means the queue is closed (the shim is stopping) or the event was malformed; either way
+        // nobody can be told, and the loop is about to end or has a bug the tests would show.
+        let _ = self.0.push_or_report(event, "event");
+    }
+}
+
+/// The UI thread of the shim, until the window backends exist (P3.4, P3.6): it applies batches to the model, in
+/// the order they were sent, and ends when asked to stop or when `app.quit` is applied.
+fn model_loop(receiver: &Receiver<Msg>, mut model: Model, events: &EventQueue, stop: &StopSignal) {
+    let mut sink = QueueSink(events);
+    while !stop.requested() {
+        match receiver.recv() {
+            Ok(Msg::Batch(batch)) => {
+                if model.apply_batch(batch, &mut sink).quit {
+                    // Asked to stop, by the application's own command: an orderly end, not a failure.
+                    stop.request();
+
+                    return;
+                }
+            }
+            Ok(Msg::Wake) => {}
+            Err(_) => return,
+        }
+    }
 }

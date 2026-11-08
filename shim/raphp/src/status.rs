@@ -20,6 +20,9 @@ pub enum RaphpStatus {
     /// `raphp_poll`: the next event is larger than the buffer. It stays queued; `raphp_next_event_size` says
     /// how large a buffer it needs.
     BufferTooSmall = -6,
+    /// The shim has stopped taking commands: `app.quit` was applied, or its UI thread has ended. Reading events
+    /// and `raphp_shutdown` still work.
+    Closed = -7,
 }
 
 /// A failure with its reason, as the guarded calls produce it.

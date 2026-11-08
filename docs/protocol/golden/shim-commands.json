@@ -1,0 +1,164 @@
+{
+  "about": "Golden cases for the shim's command protocol (docs/protocol/shim-commands.md). Each case starts a fresh shim, sends the batches in order through raphp_send, and reads every event back through raphp_poll. 'events' are compared as JSON values, with the 'message' field of error events left out (it is for people and may be reworded). 'diagnostics' is what raphp_diagnostics returns afterwards. A case with \"quits\": true ends in app.quit.",
+  "cases": [
+    {
+      "name": "an_empty_batch_is_done_at_once",
+      "batches": [ {"batch": 1, "commands": []} ],
+      "events": [ {"type": "batch.done", "batch": 1, "applied": 0, "failed": 0} ],
+      "diagnostics": {"batches": 1, "commands_applied": 0, "commands_failed": 0, "widgets": 0, "windows": {}}
+    },
+    {
+      "name": "a_window_with_a_small_tree",
+      "batches": [
+        {"batch": 1, "commands": [
+          {"op": "window.create", "id": 1, "title": "Demo", "width": 640, "height": 480},
+          {"op": "widget.create", "id": 1, "type": "column", "props": {"gap": 8, "padding": 12}},
+          {"op": "widget.create", "id": 2, "type": "label", "props": {"text": "Hello"}},
+          {"op": "widget.create", "id": 3, "type": "progress_bar", "props": {"value": 0.25}},
+          {"op": "widget.create", "id": 4, "type": "button", "props": {"label": "Go"}},
+          {"op": "widget.append", "parent": 1, "child": 2},
+          {"op": "widget.append", "parent": 1, "child": 3},
+          {"op": "widget.insert", "parent": 1, "child": 4, "index": 0},
+          {"op": "window.set_root", "id": 1, "widget": 1},
+          {"op": "widget.set", "id": 3, "props": {"value": 0.5}}
+        ]}
+      ],
+      "events": [ {"type": "batch.done", "batch": 1, "applied": 10, "failed": 0} ],
+      "diagnostics": {"batches": 1, "commands_applied": 10, "commands_failed": 0, "widgets": 4, "windows": {"1": {"redraws_requested": 0, "frames_drawn": 0}}}
+    },
+    {
+      "name": "errors_are_reported_one_by_one_and_the_batch_goes_on",
+      "batches": [
+        {"batch": 2, "commands": [
+          {"op": "widget.create", "id": 1, "type": "label"},
+          {"op": "widget.set", "id": 99, "props": {"text": "x"}},
+          {"op": "widget.create", "id": 2, "type": "hologram"},
+          {"op": "widget.create", "id": 3, "type": "label", "props": {"colour": "red"}},
+          {"op": "widget.set", "id": 1, "props": {"text": 5}},
+          {"op": "widget.explode"},
+          {"op": "widget.destroy", "id": 1, "extra": true},
+          {"op": "widget.destroy"},
+          {"op": "widget.destroy", "id": "x"},
+          {"op": "widget.create", "id": 4, "type": "label"}
+        ]}
+      ],
+      "events": [
+        {"type": "error", "batch": 2, "index": 1, "op": "widget.set", "code": "unknown_widget", "target": 99},
+        {"type": "error", "batch": 2, "index": 2, "op": "widget.create", "code": "unknown_type", "target": 2},
+        {"type": "error", "batch": 2, "index": 3, "op": "widget.create", "code": "unknown_prop", "target": 3},
+        {"type": "error", "batch": 2, "index": 4, "op": "widget.set", "code": "bad_prop", "target": 1},
+        {"type": "error", "batch": 2, "index": 5, "op": "widget.explode", "code": "unknown_op", "target": null},
+        {"type": "error", "batch": 2, "index": 6, "op": "widget.destroy", "code": "unknown_field", "target": null},
+        {"type": "error", "batch": 2, "index": 7, "op": "widget.destroy", "code": "missing_field", "target": null},
+        {"type": "error", "batch": 2, "index": 8, "op": "widget.destroy", "code": "bad_field", "target": null},
+        {"type": "batch.done", "batch": 2, "applied": 2, "failed": 8}
+      ],
+      "diagnostics": {"batches": 1, "commands_applied": 2, "commands_failed": 8, "widgets": 2, "windows": {}}
+    },
+    {
+      "name": "ids_only_go_up_and_are_never_reused",
+      "batches": [
+        {"batch": 3, "commands": [
+          {"op": "widget.create", "id": 5, "type": "label"},
+          {"op": "widget.create", "id": 5, "type": "label"},
+          {"op": "widget.create", "id": 4, "type": "label"},
+          {"op": "widget.destroy", "id": 5},
+          {"op": "widget.create", "id": 5, "type": "label"},
+          {"op": "window.create", "id": 2},
+          {"op": "window.create", "id": 2},
+          {"op": "window.create", "id": 1}
+        ]}
+      ],
+      "events": [
+        {"type": "error", "batch": 3, "index": 1, "op": "widget.create", "code": "id_reused", "target": 5},
+        {"type": "error", "batch": 3, "index": 2, "op": "widget.create", "code": "id_reused", "target": 4},
+        {"type": "error", "batch": 3, "index": 4, "op": "widget.create", "code": "id_reused", "target": 5},
+        {"type": "error", "batch": 3, "index": 6, "op": "window.create", "code": "id_reused", "target": 2},
+        {"type": "error", "batch": 3, "index": 7, "op": "window.create", "code": "id_reused", "target": 1},
+        {"type": "batch.done", "batch": 3, "applied": 3, "failed": 5}
+      ],
+      "diagnostics": {"batches": 1, "commands_applied": 3, "commands_failed": 5, "widgets": 0, "windows": {"2": {"redraws_requested": 0, "frames_drawn": 0}}}
+    },
+    {
+      "name": "structure_rules_cycles_parents_containers_indexes",
+      "batches": [
+        {"batch": 4, "commands": [
+          {"op": "widget.create", "id": 1, "type": "column"},
+          {"op": "widget.create", "id": 2, "type": "column"},
+          {"op": "widget.create", "id": 3, "type": "label"},
+          {"op": "widget.create", "id": 4, "type": "scroll_view"},
+          {"op": "widget.create", "id": 5, "type": "label"},
+          {"op": "widget.append", "parent": 1, "child": 2},
+          {"op": "widget.append", "parent": 2, "child": 1},
+          {"op": "widget.append", "parent": 1, "child": 1},
+          {"op": "widget.append", "parent": 3, "child": 5},
+          {"op": "widget.append", "parent": 4, "child": 3},
+          {"op": "widget.append", "parent": 4, "child": 5},
+          {"op": "widget.append", "parent": 1, "child": 3},
+          {"op": "widget.insert", "parent": 1, "child": 5, "index": 7},
+          {"op": "widget.remove", "id": 5},
+          {"op": "widget.insert", "parent": 1, "child": 5, "index": 0}
+        ]}
+      ],
+      "events": [
+        {"type": "error", "batch": 4, "index": 6, "op": "widget.append", "code": "cycle", "target": 1},
+        {"type": "error", "batch": 4, "index": 7, "op": "widget.append", "code": "cycle", "target": 1},
+        {"type": "error", "batch": 4, "index": 8, "op": "widget.append", "code": "not_a_container", "target": 3},
+        {"type": "error", "batch": 4, "index": 10, "op": "widget.append", "code": "limit", "target": 4},
+        {"type": "error", "batch": 4, "index": 11, "op": "widget.append", "code": "has_parent", "target": 3},
+        {"type": "error", "batch": 4, "index": 12, "op": "widget.insert", "code": "bad_index", "target": 1},
+        {"type": "error", "batch": 4, "index": 13, "op": "widget.remove", "code": "no_parent", "target": 5},
+        {"type": "batch.done", "batch": 4, "applied": 8, "failed": 7}
+      ],
+      "diagnostics": {"batches": 1, "commands_applied": 8, "commands_failed": 7, "widgets": 5, "windows": {}}
+    },
+    {
+      "name": "destroying_widgets_and_windows",
+      "batches": [
+        {"batch": 5, "commands": [
+          {"op": "window.create", "id": 1},
+          {"op": "widget.create", "id": 1, "type": "column"},
+          {"op": "widget.create", "id": 2, "type": "label"},
+          {"op": "widget.append", "parent": 1, "child": 2},
+          {"op": "window.set_root", "id": 1, "widget": 1},
+          {"op": "widget.destroy", "id": 2},
+          {"op": "widget.set", "id": 2, "props": {"text": "gone"}},
+          {"op": "window.destroy", "id": 1},
+          {"op": "widget.set", "id": 1, "props": {"gap": 1}},
+          {"op": "window.destroy", "id": 1}
+        ]}
+      ],
+      "events": [
+        {"type": "error", "batch": 5, "index": 6, "op": "widget.set", "code": "unknown_widget", "target": 2},
+        {"type": "error", "batch": 5, "index": 8, "op": "widget.set", "code": "unknown_widget", "target": 1},
+        {"type": "error", "batch": 5, "index": 9, "op": "window.destroy", "code": "unknown_window", "target": 1},
+        {"type": "batch.done", "batch": 5, "applied": 7, "failed": 3}
+      ],
+      "diagnostics": {"batches": 1, "commands_applied": 7, "commands_failed": 3, "widgets": 0, "windows": {}}
+    },
+    {
+      "name": "an_anonymous_batch_has_no_batch_id_and_no_done_event",
+      "batches": [ [ {"op": "widget.destroy", "id": 3} ] ],
+      "events": [
+        {"type": "error", "batch": null, "index": 0, "op": "widget.destroy", "code": "unknown_widget", "target": 3}
+      ],
+      "diagnostics": {"batches": 1, "commands_applied": 0, "commands_failed": 1, "widgets": 0, "windows": {}}
+    },
+    {
+      "name": "app_quit_ends_the_batch_and_the_shim",
+      "quits": true,
+      "batches": [
+        {"batch": 1, "commands": [
+          {"op": "widget.create", "id": 1, "type": "label"},
+          {"op": "app.quit"},
+          {"op": "widget.create", "id": 2, "type": "label"}
+        ]}
+      ],
+      "events": [
+        {"type": "app.quit"},
+        {"type": "batch.done", "batch": 1, "applied": 2, "failed": 0}
+      ],
+      "diagnostics": {"batches": 1, "commands_applied": 2, "commands_failed": 0, "widgets": 1, "windows": {}}
+    }
+  ]
+}

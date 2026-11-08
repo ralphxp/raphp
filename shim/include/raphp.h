@@ -37,6 +37,11 @@ enum RaphpStatus
    how large a buffer it needs.
    */
   RAPHP_STATUS_BUFFER_TOO_SMALL = -6,
+  /*
+   The shim has stopped taking commands: `app.quit` was applied, or its UI thread has ended. Reading events
+   and `raphp_shutdown` still work.
+   */
+  RAPHP_STATUS_CLOSED = -7,
 };
 typedef int32_t RaphpStatus;
 
@@ -133,3 +138,16 @@ size_t raphp_next_event_size(const RaphpShim *shim);
  `event.too_large` event, so a poll buffer of this size can never be too small.
  */
 size_t raphp_max_event_bytes(void);
+
+/*
+ Copies the diagnostic counters (one line of JSON: batches, commands applied and failed, widgets, and per
+ window `redraws_requested` and `frames_drawn`) into `out`, at most `cap` bytes, and returns the **full**
+ length, like `raphp_last_error`. Read-only; it works on a poisoned shim and does not wait for the UI thread.
+ The per-window redraw counters stay at 0 until drawing exists (step P3.8). With a null `shim` it returns 0.
+
+ # Safety
+ `out` must point to `cap` writable bytes, or be null.
+ */
+size_t raphp_diagnostics(const RaphpShim *shim,
+                         char *out,
+                         size_t cap);

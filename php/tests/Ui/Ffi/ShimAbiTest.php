@@ -61,6 +61,7 @@ final class ShimAbiTest extends TestCase
         self::assertSame(-2, $ffi->RAPHP_STATUS_POISONED);
         self::assertSame(-3, $ffi->RAPHP_STATUS_PANICKED);
         self::assertSame(-6, $ffi->RAPHP_STATUS_BUFFER_TOO_SMALL);
+        self::assertSame(-7, $ffi->RAPHP_STATUS_CLOSED);
     }
 
     public function testTheAbiVersionIsMajorThenMinor(): void
@@ -69,7 +70,7 @@ final class ShimAbiTest extends TestCase
         self::assertIsInt($version);
 
         self::assertSame(0, $version >> 16, 'major');
-        self::assertSame(2, $version & 0xFFFF, 'minor');
+        self::assertSame(3, $version & 0xFFFF, 'minor');
     }
 
     public function testTheShimStartsAcceptsAnEmptyBatchAndShutsDown(): void
@@ -93,15 +94,15 @@ final class ShimAbiTest extends TestCase
         self::assertStringContainsString('not valid UTF-8', $this->lastError($ffi, null));
     }
 
-    public function testAnUnknownCommandIsAnErrorAndTheShimStaysUsable(): void
+    public function testAnInvalidBatchIsRefusedAtOnceAndTheShimStaysUsable(): void
     {
         $ffi = $this->ffi();
         $shim = $ffi->raphp_init('', 0);
 
-        $status = $ffi->raphp_send($shim, '[{"op":"nonsense"}]', 19);
+        $status = $ffi->raphp_send($shim, 'not a batch', 11);
 
-        self::assertSame(-4, $status);
-        self::assertStringContainsString('not implemented yet', $this->lastError($ffi, $shim));
+        self::assertSame(-1, $status);
+        self::assertStringContainsString('not valid JSON', $this->lastError($ffi, $shim));
         self::assertSame(0, $ffi->raphp_send($shim, '[]', 2), 'still usable');
         self::assertSame(0, $ffi->raphp_shutdown($shim));
     }
@@ -124,7 +125,7 @@ final class ShimAbiTest extends TestCase
     {
         $ffi = $this->ffi();
         $shim = $ffi->raphp_init('', 0);
-        $ffi->raphp_send($shim, '[{"op":"nonsense"}]', 19);
+        $ffi->raphp_send($shim, 'not a batch', 11);
 
         $full = $ffi->raphp_last_error($shim, null, 0);
         $small = $ffi->new('char[10]');
@@ -252,5 +253,100 @@ final class ShimAbiTest extends TestCase
         self::assertSame(-2, $ffi->raphp_send($shim, '[]', 2));
         self::assertSame(['{"type":"shim.failed","reason":"the window system failed"}'], $this->drain($ffi, $shim, 4096), 'poll still works on a poisoned shim');
         $ffi->raphp_shutdown($shim);
+    }
+
+    /**
+     * Sends a batch and returns the events up to and including its `batch.done`.
+     *
+     * @param array<array-key, mixed> $commands
+     *
+     * @return list<array<mixed>>
+     */
+    private function sendAndWait(FFI $ffi, mixed $shim, int $batch, array $commands): array
+    {
+        $text = json_encode(['batch' => $batch, 'commands' => $commands], JSON_THROW_ON_ERROR);
+        self::assertSame(0, $ffi->raphp_send($shim, $text, strlen($text)));
+
+        $events = [];
+        $deadline = hrtime(true) + 5_000_000_000;
+        while (hrtime(true) < $deadline) {
+            $this->waitForWakeUp($ffi, $shim);
+            foreach ($this->drain($ffi, $shim, 4096) as $line) {
+                $event = json_decode($line, true, 512, JSON_THROW_ON_ERROR);
+                self::assertIsArray($event);
+                $events[] = $event;
+                if (($event['type'] ?? null) === 'batch.done' && ($event['batch'] ?? null) === $batch) {
+                    return $events;
+                }
+            }
+        }
+
+        self::fail('the batch was never reported done');
+    }
+
+    public function testABatchOfCommandsIsAppliedAndReportedThroughTheEvents(): void
+    {
+        $ffi = $this->ffi();
+        $shim = $ffi->raphp_init('', 0);
+
+        $events = $this->sendAndWait($ffi, $shim, 7, [
+            ['op' => 'window.create', 'id' => 1, 'title' => 'Demo'],
+            ['op' => 'widget.create', 'id' => 1, 'type' => 'column'],
+            ['op' => 'widget.create', 'id' => 2, 'type' => 'label', 'props' => ['text' => 'Hello']],
+            ['op' => 'widget.append', 'parent' => 1, 'child' => 2],
+            ['op' => 'window.set_root', 'id' => 1, 'widget' => 1],
+            ['op' => 'widget.set', 'id' => 99, 'props' => ['text' => 'nobody']],
+        ]);
+
+        self::assertCount(2, $events);
+        self::assertSame('error', $events[0]['type']);
+        self::assertSame(7, $events[0]['batch']);
+        self::assertSame(5, $events[0]['index']);
+        self::assertSame('unknown_widget', $events[0]['code']);
+        self::assertSame(99, $events[0]['target']);
+        self::assertEquals(['type' => 'batch.done', 'batch' => 7, 'applied' => 5, 'failed' => 1], $events[1], 'the key order of the shim\'s JSON does not matter');
+        $ffi->raphp_shutdown($shim);
+    }
+
+    public function testTheDiagnosticsCanBeReadThroughFfi(): void
+    {
+        $ffi = $this->ffi();
+        $shim = $ffi->raphp_init('', 0);
+        $this->sendAndWait($ffi, $shim, 1, [['op' => 'window.create', 'id' => 1], ['op' => 'widget.create', 'id' => 1, 'type' => 'label']]);
+
+        $needed = $ffi->raphp_diagnostics($shim, null, 0);
+        self::assertIsInt($needed);
+        if ($needed < 1) {
+            self::fail('the diagnostics are empty');
+        }
+
+        $buffer = $ffi->new("char[{$needed}]");
+        self::assertSame($needed, $ffi->raphp_diagnostics($shim, $buffer, $needed));
+        $diagnostics = json_decode(FFI::string($buffer, $needed), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertIsArray($diagnostics);
+        self::assertSame(1, $diagnostics['batches']);
+        self::assertSame(2, $diagnostics['commands_applied']);
+        self::assertSame(1, $diagnostics['widgets']);
+        self::assertSame(['1' => ['redraws_requested' => 0, 'frames_drawn' => 0]], $diagnostics['windows']);
+        $ffi->raphp_shutdown($shim);
+    }
+
+    public function testAppQuitEndsTheShimInOrderAndLaterCommandsAreRefusedAsClosed(): void
+    {
+        $ffi = $this->ffi();
+        $shim = $ffi->raphp_init('', 0);
+
+        $events = $this->sendAndWait($ffi, $shim, 1, [['op' => 'app.quit']]);
+
+        self::assertSame(['type' => 'app.quit'], $events[0]);
+        $deadline = hrtime(true) + 5_000_000_000;
+        while ($ffi->raphp_send($shim, '[]', 2) === 0 && hrtime(true) < $deadline) {
+            usleep(5_000);
+        }
+
+        self::assertSame(-7, $ffi->raphp_send($shim, '[]', 2), 'the shim stopped taking commands');
+        self::assertStringContainsString('stopped taking commands', $this->lastError($ffi, $shim));
+        self::assertSame(0, $ffi->raphp_shutdown($shim), 'an orderly end, not a timeout');
     }
 }

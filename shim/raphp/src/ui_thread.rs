@@ -12,11 +12,12 @@ use std::time::{Duration, Instant};
 use crate::health::Health;
 
 /// How the body of the UI thread is told to stop, and how it can wait for that.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(crate) struct StopSignal {
     requested: AtomicBool,
     lock: Mutex<()>,
     changed: Condvar,
+    waker: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 impl StopSignal {
@@ -25,12 +26,30 @@ impl StopSignal {
     }
 
     pub fn request(&self) {
-        let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
-        self.requested.store(true, Ordering::SeqCst);
-        self.changed.notify_all();
+        {
+            let _guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+            self.requested.store(true, Ordering::SeqCst);
+            self.changed.notify_all();
+        }
+
+        // A body that waits on something other than this signal (the command channel) is woken too.
+        if let Some(waker) = self
+            .waker
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+        {
+            waker();
+        }
+    }
+
+    /// Registers what to do when a stop is requested, besides waking [`Self::wait`].
+    pub fn set_waker(&self, waker: impl Fn() + Send + Sync + 'static) {
+        *self.waker.lock().unwrap_or_else(PoisonError::into_inner) = Some(Box::new(waker));
     }
 
     /// Waits until a stop is requested or the time is up. Returns whether a stop was requested.
+    #[cfg(test)]
     pub fn wait(&self, timeout: Duration) -> bool {
         let guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
         let (_guard, _) = self

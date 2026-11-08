@@ -7,15 +7,17 @@ use std::ffi::{c_char, c_int};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
-use crate::events::{MAX_EVENT_BYTES, Polled};
-use crate::shim::{DEFAULT_SHUTDOWN_TIMEOUT, RaphpShim, Shim, idle_ui_body};
+use std::sync::Arc;
+
+use crate::events::{EventQueue, MAX_EVENT_BYTES, Polled};
+use crate::shim::{DEFAULT_SHUTDOWN_TIMEOUT, RaphpShim, Shim};
 use crate::status::{RaphpStatus, ShimError};
 use crate::ui_thread::panic_message;
 
 /// The ABI version: major in the high 16 bits, minor in the low 16. A minor bump adds functions; a major
 /// bump breaks. Version 0.x is not stable.
 const ABI_MAJOR: u32 = 0;
-const ABI_MINOR: u32 = 2;
+const ABI_MINOR: u32 = 3;
 
 thread_local! {
     /// The reason the last call failed when there is no handle to keep it on (a failed `raphp_init`).
@@ -130,7 +132,14 @@ pub unsafe extern "C" fn raphp_init(cfg: *const c_char, len: usize) -> *mut Raph
         // The configuration is checked now and read from step P3.3 on, when there is something to configure.
         unsafe { utf8(cfg, len, "the configuration") }?;
 
-        Shim::start(DEFAULT_SHUTDOWN_TIMEOUT, idle_ui_body).map_err(|error| {
+        let events = EventQueue::new().map_err(|error| {
+            ShimError::new(
+                RaphpStatus::Panicked,
+                format!("cannot create the event descriptor: {error}"),
+            )
+        })?;
+
+        Shim::start_model(Arc::new(events), DEFAULT_SHUTDOWN_TIMEOUT).map_err(|error| {
             ShimError::new(
                 RaphpStatus::Panicked,
                 format!("cannot start the UI thread: {error}"),
@@ -299,4 +308,35 @@ pub unsafe extern "C" fn raphp_next_event_size(shim: *const RaphpShim) -> usize 
 #[unsafe(no_mangle)]
 pub extern "C" fn raphp_max_event_bytes() -> usize {
     catch_unwind(|| MAX_EVENT_BYTES).unwrap_or(0)
+}
+
+/// Copies the diagnostic counters (one line of JSON: batches, commands applied and failed, widgets, and per
+/// window `redraws_requested` and `frames_drawn`) into `out`, at most `cap` bytes, and returns the **full**
+/// length, like `raphp_last_error`. Read-only; it works on a poisoned shim and does not wait for the UI thread.
+/// The per-window redraw counters stay at 0 until drawing exists (step P3.8). With a null `shim` it returns 0.
+///
+/// # Safety
+/// `out` must point to `cap` writable bytes, or be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn raphp_diagnostics(
+    shim: *const RaphpShim,
+    out: *mut c_char,
+    cap: usize,
+) -> usize {
+    let json = guarded_allow_poisoned(shim, |shim| {
+        let json = shim.diagnostics.to_json();
+        if !out.is_null() && cap > 0 {
+            let mut end = json.len().min(cap);
+            while !json.is_char_boundary(end) {
+                end -= 1;
+            }
+
+            // SAFETY: the caller guarantees `cap` writable bytes, and `end <= cap`.
+            unsafe { ptr::copy_nonoverlapping(json.as_ptr(), out.cast::<u8>(), end) };
+        }
+
+        Ok(isize::try_from(json.len()).unwrap_or(isize::MAX))
+    });
+
+    json.map_or(0, |length| usize::try_from(length).unwrap_or(0))
 }

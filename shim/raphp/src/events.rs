@@ -288,10 +288,10 @@ impl EventQueue {
                 state.superseded -= 1;
             }
 
-            if let Some(key) = entry.key {
-                if state.latest.get(&key) == Some(&sequence) {
-                    state.latest.remove(&key);
-                }
+            if let Some(key) = entry.key
+                && state.latest.get(&key) == Some(&sequence)
+            {
+                state.latest.remove(&key);
             }
         }
 
@@ -338,30 +338,30 @@ impl EventQueue {
     fn try_place(&self, state: &mut State, class: EventClass, line: &mut Vec<u8>) -> bool {
         let length = line.len();
 
-        if let EventClass::Continuous(key) = class {
-            if let Some(&sequence) = state.latest.get(&key) {
-                let barrier_now = state.barrier;
-                if let Some(entry) = state.entries.get_mut(&sequence) {
-                    if entry.barrier == barrier_now {
-                        // The same state again with no discrete event between: the newest replaces it.
-                        let old = std::mem::replace(&mut entry.line, std::mem::take(line));
-                        state.bytes = state.bytes - old.len() + length;
-                        #[cfg(test)]
-                        {
-                            state.max_bytes_seen = state.max_bytes_seen.max(state.bytes);
-                        }
-
-                        return true;
-                    }
+        if let EventClass::Continuous(key) = class
+            && let Some(&sequence) = state.latest.get(&key)
+        {
+            let barrier_now = state.barrier;
+            if let Some(entry) = state.entries.get_mut(&sequence)
+                && entry.barrier == barrier_now
+            {
+                // The same state again with no discrete event between: the newest replaces it.
+                let old = std::mem::replace(&mut entry.line, std::mem::take(line));
+                state.bytes = state.bytes - old.len() + length;
+                #[cfg(test)]
+                {
+                    state.max_bytes_seen = state.max_bytes_seen.max(state.bytes);
                 }
 
-                if state.bytes + length > self.soft_limit {
-                    // Coalesce harder: drop the older one across the discrete events, the newest goes last.
-                    if let Some(old) = state.entries.remove(&sequence) {
-                        state.bytes -= old.line.len();
-                        if old.superseded {
-                            state.superseded -= 1;
-                        }
+                return true;
+            }
+
+            if state.bytes + length > self.soft_limit {
+                // Coalesce harder: drop the older one across the discrete events, the newest goes last.
+                if let Some(old) = state.entries.remove(&sequence) {
+                    state.bytes -= old.line.len();
+                    if old.superseded {
+                        state.superseded -= 1;
                     }
                 }
             }
@@ -398,15 +398,13 @@ impl EventQueue {
             state.max_bytes_seen = state.max_bytes_seen.max(state.bytes);
         }
 
-        if let Some(key) = key {
-            if let Some(older) = state.latest.insert(key, sequence) {
-                if let Some(entry) = state.entries.get_mut(&older) {
-                    if !entry.superseded {
-                        entry.superseded = true;
-                        state.superseded += 1;
-                    }
-                }
-            }
+        if let Some(key) = key
+            && let Some(older) = state.latest.insert(key, sequence)
+            && let Some(entry) = state.entries.get_mut(&older)
+            && !entry.superseded
+        {
+            entry.superseded = true;
+            state.superseded += 1;
         }
 
         state.entries.insert(

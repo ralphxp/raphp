@@ -4,7 +4,7 @@
     python3 tools/mutation/mutate_rust.py mutants.json
 
 `mutants.json` is a list of [file relative to shim/raphp/src, text to find, replacement, label]. The text
-must occur exactly once. Each change is made in a COPY of `shim/` (never in the repository), and
+must occur exactly once. Each change is made in a COPY of `shim/` and `docs/protocol/` (never in the repository), and
 `cargo test -p raphp-shim --lib` must fail for the mutant to count as killed. A mutant that does not
 compile is "not applicable". The shim has no dependencies, so each build takes a few seconds.
 """
@@ -35,6 +35,8 @@ def main() -> int:
     started = time.time()
     try:
         shutil.copytree(ROOT / 'shim', work / 'shim', ignore=shutil.ignore_patterns('target'))
+        (work / 'docs').mkdir()
+        shutil.copytree(ROOT / 'docs/protocol', work / 'docs/protocol')  # the golden files some tests read
         code, output = cargo_test(work, 600)
         if code != 0:
             print('The baseline fails without any mutation, so no result would mean anything:\n' + output[-1500:])

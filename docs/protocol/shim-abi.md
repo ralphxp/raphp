@@ -1,22 +1,23 @@
-# The shim's C ABI (`libraphp`), version 0.2
+# The shim's C ABI (`libraphp`), version 0.3
 
-Steps P3.1 and P3.2. The header is `shim/include/raphp.h`, generated from the Rust sources by `make header` (cbindgen plus a small filter, see "The header") and committed. PHP loads it with `FFI::cdef` and loads `libraphp.so`. This page is the contract: what each function promises, what a failure looks like, and what happens when the shim itself fails. Where something is decided now but wired in a later step, it says so.
+Steps P3.1 to P3.3. The commands that `raphp_send` carries, and what the shim answers with, are in `shim-commands.md`. The header is `shim/include/raphp.h`, generated from the Rust sources by `make header` (cbindgen plus a small filter, see "The header") and committed. PHP loads it with `FFI::cdef` and loads `libraphp.so`. This page is the contract: what each function promises, what a failure looks like, and what happens when the shim itself fails. Where something is decided now but wired in a later step, it says so.
 
 ## The functions (all of the ABI so far)
 
-Version 0.1 (P3.1) had the first five; 0.2 (P3.2) adds the four that carry events to PHP.
+Version 0.1 (P3.1) had the first five; 0.2 (P3.2) added the four that carry events to PHP; 0.3 (P3.3) adds `raphp_diagnostics` and the status `CLOSED`.
 
 | Function | What it does |
 |---|---|
-| `uint32_t raphp_abi_version(void)` | `major << 16 \| minor`. 0.2 is `2`. PHP compares it before anything else. A minor bump adds functions; a major bump breaks. 0.x is not stable. |
+| `uint32_t raphp_abi_version(void)` | `major << 16 \| minor`. 0.3 is `3`. PHP compares it before anything else. A minor bump adds functions; a major bump breaks. 0.x is not stable. |
 | `RaphpShim* raphp_init(const char* cfg, size_t len)` | Starts the shim and its UI thread. `cfg` is UTF-8, may be empty, and may be null when `len` is 0. Returns **null** on failure; the reason is `raphp_last_error(NULL, ...)` for the calling thread. (In PHP a null pointer arrives as `null`.) The configuration is only checked for UTF-8 so far; it is read from P3.3 on. |
-| `RaphpStatus raphp_send(const RaphpShim*, const char* batch, size_t len)` | Sends a batch of commands (UTF-8) and returns at once. So far only the empty batch `[]` (white space around it is allowed) is accepted; anything else is `UNSUPPORTED` until the command model (P3.3). |
+| `RaphpStatus raphp_send(const RaphpShim*, const char* batch, size_t len)` | Sends a batch of commands (UTF-8 JSON) and returns at once; the UI thread applies it. A text that is not a batch is refused here (`INVALID_ARGUMENT`); problems inside the commands come back as events. `CLOSED` once the shim has stopped taking commands. See `shim-commands.md`. |
 | `size_t raphp_last_error(const RaphpShim*, char* out, size_t cap)` | Copies the last error's text into `out` (UTF-8, **not** NUL-terminated, at most `cap` bytes, never cutting a character) and returns the **full** length, so PHP can ask again with a bigger buffer. A null `shim` means "the reason the calling thread's last `raphp_init` failed". A null `out` only returns the length. Works on a poisoned shim. |
 | `RaphpStatus raphp_shutdown(RaphpShim*)` | Asks the UI thread to stop, waits a bounded time, frees the handle. The handle is invalid afterwards whatever the result. Works on a poisoned shim. |
 
 | `int raphp_event_fd(const RaphpShim*)` | The descriptor that becomes readable when events are queued. It belongs to the shim: close-on-exec (a worker does not inherit it, tested), valid until `raphp_shutdown`, never closed by PHP. -1 for a null handle. Works on a poisoned shim. |
 | `intptr_t raphp_poll(const RaphpShim*, char* out, size_t cap)` | Copies whole events into `out`, one JSON line each, every line ending in `\n`, as many as fit, in order. Returns the bytes written; `0` when nothing is queued; `RAPHP_STATUS_BUFFER_TOO_SMALL` (-6) when the **next** event is larger than `cap` (see "A large event"). Any other negative value is a `RaphpStatus`. A null `out` is allowed only with `cap` 0. Works on a poisoned shim. |
 | `size_t raphp_next_event_size(const RaphpShim*)` | The size in bytes, newline included, of the event at the head of the queue; 0 when empty or the handle is null. After -6 it is the buffer size to poll with. Works on a poisoned shim. |
+| `size_t raphp_diagnostics(const RaphpShim*, char* out, size_t cap)` | One line of JSON with the counters (batches, commands applied and failed, widgets, and per window `redraws_requested` and `frames_drawn`), read like `raphp_last_error`: the full length is returned. Read-only, works on a poisoned shim, never waits for the UI thread. See `shim-commands.md`. |
 | `size_t raphp_max_event_bytes(void)` | The largest event the shim queues, newline included (1 MiB). A poll buffer of this size can never be too small. |
 
 The draft in `FRAMEWORK.md` 7.3 had `raphp_shutdown` returning `void` and `raphp_send` returning `int`; both return `RaphpStatus`, and `raphp_poll` returns `intptr_t`.
@@ -34,6 +35,7 @@ Zero is success and every failure is negative, so PHP can test `< 0`.
 | -4 | `..._UNSUPPORTED` | Well formed but not supported (an unknown command). The shim is unharmed. |
 | -5 | `..._TIMED_OUT` | `raphp_shutdown` could not stop the UI thread in time and left it behind (see "Shutdown"). |
 | -6 | `..._BUFFER_TOO_SMALL` | `raphp_poll` only: the next event is larger than the buffer. Nothing was copied; the event stays queued. |
+| -7 | `..._CLOSED` | `raphp_send`: the shim has stopped taking commands (`app.quit` was applied, or its UI thread has ended). Reading events and shutting down still work. |
 
 ### Ownership and strings
 

@@ -7,25 +7,32 @@
 //! - **The UI thread never calls PHP.**
 
 mod abi;
+mod diagnostics;
 #[allow(
     dead_code,
     reason = "the producers are the backends of steps P3.4 and P3.6; until then only the tests and the test-hooks build create events. Remove this when they exist."
 )]
 mod events;
 mod health;
+mod model;
+mod protocol;
 mod shim;
 mod status;
 mod ui_thread;
 
 pub use abi::{
-    raphp_abi_version, raphp_event_fd, raphp_init, raphp_last_error, raphp_max_event_bytes,
-    raphp_next_event_size, raphp_poll, raphp_send, raphp_shutdown,
+    raphp_abi_version, raphp_diagnostics, raphp_event_fd, raphp_init, raphp_last_error,
+    raphp_max_event_bytes, raphp_next_event_size, raphp_poll, raphp_send, raphp_shutdown,
 };
 pub use shim::RaphpShim;
 pub use status::RaphpStatus;
 
 #[cfg(test)]
+mod contract_tests;
+#[cfg(test)]
 mod event_tests;
+#[cfg(test)]
+mod model_tests;
 #[cfg(test)]
 mod tests;
 

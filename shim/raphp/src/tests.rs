@@ -35,7 +35,10 @@ where
 }
 
 fn idle_handle() -> *mut RaphpShim {
-    handle_with(Duration::from_secs(2), crate::shim::idle_ui_body)
+    let events = Arc::new(crate::events::EventQueue::new().expect("an eventfd"));
+    let shim = Shim::start_model(events, Duration::from_secs(2)).expect("starts");
+
+    Box::into_raw(Box::new(RaphpShim { shim }))
 }
 
 fn send(shim: *const RaphpShim, batch: &str) -> RaphpStatus {
@@ -63,7 +66,7 @@ fn the_abi_version_is_major_then_minor() {
     let version = raphp_abi_version();
 
     assert_eq!(version >> 16, 0, "major");
-    assert_eq!(version & 0xffff, 2, "minor");
+    assert_eq!(version & 0xffff, 3, "minor");
 }
 
 #[test]
@@ -123,11 +126,13 @@ fn bad_arguments_are_errors_and_the_shim_stays_usable() {
         unsafe { raphp_send(shim, bad.as_ptr().cast::<c_char>(), 1) },
         RaphpStatus::InvalidArgument
     );
+    assert_eq!(send(shim, "not json at all"), RaphpStatus::InvalidArgument);
+    assert!(last_error(shim).contains("not valid JSON"));
     assert_eq!(
-        send(shim, "[{\"op\":\"nonsense\"}]"),
-        RaphpStatus::Unsupported
+        send(shim, "{\"commands\":[]}"),
+        RaphpStatus::InvalidArgument
     );
-    assert!(last_error(shim).contains("not implemented yet"));
+    assert!(last_error(shim).contains("needs a \"batch\" id"));
 
     assert!(!is_poisoned(shim));
     assert_eq!(send(shim, "[]"), RaphpStatus::Ok, "still usable");
@@ -392,7 +397,7 @@ fn every_exported_function_runs_under_catch_unwind() {
     }
 
     assert_eq!(
-        exported, 9,
+        exported, 10,
         "the list of exported functions changed: update the header test and the contract"
     );
 }
@@ -414,7 +419,7 @@ fn a_length_beyond_what_a_slice_can_have_is_refused_before_any_byte_is_read() {
 #[test]
 fn a_null_output_buffer_with_a_capacity_only_reports_the_length() {
     let shim = idle_handle();
-    send(shim, "[{\"op\":\"nonsense\"}]");
+    send(shim, "not json"); // refused at once, with a reason
 
     let length = unsafe { raphp_last_error(shim, ptr::null_mut(), 64) };
 
