@@ -15,12 +15,10 @@ pub(crate) trait Clock: Send + Sync {
 }
 
 /// The real, monotonic clock.
-#[allow(dead_code, reason = "used by the window backend of step P3.6")]
 pub(crate) struct SystemClock {
     start: Instant,
 }
 
-#[allow(dead_code, reason = "used by the window backend of step P3.6")]
 impl SystemClock {
     pub fn new() -> Self {
         Self {

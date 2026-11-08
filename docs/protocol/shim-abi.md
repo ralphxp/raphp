@@ -130,10 +130,24 @@ When the shim is poisoned it queues one last discrete event, `{"type":"shim.fail
 
 | Key | Meaning | Values (default) |
 |---|---|---|
-| `backend` | What the UI thread draws on | `"headless"` (the default). `"window"` is refused until P3.6 builds it. |
+| `backend` | What the UI thread draws on | `"headless"` (the default) or `"window"` (real windows, P3.6) |
 | `refresh_hz` | The most frames a window gets per second: the headless stand-in for the monitor's refresh rate | 1 to 1000 (60) |
 | `scale` | Physical pixels per logical pixel (HiDPI) | 0.25 to 8 (1) |
 | `surface_budget_mib` | The most memory all the headless pictures may take together | 1 to 4096 (256) |
+
+`refresh_hz`, `scale` and `surface_budget_mib` are the headless backend's stand-ins for what a window system decides itself (the monitor's refresh, the scale factor, memory), so with `"backend":"window"` each of them is refused, not ignored.
+
+## The window backend (P3.6)
+
+`"backend":"window"` puts winit's event loop on the UI thread (Wayland or X11; `with_any_thread`, as in spike P0.1). It differs from the headless backend like this:
+
+- **`raphp_init` fails, with the reason, when there is no window system** (no `WAYLAND_DISPLAY` or `DISPLAY`, or the compositor refuses): the loop is built on the UI thread and `raphp_init` waits up to 10 seconds for it to say so.
+- **A process can start the window backend once** (F61). winit allows one event loop per process for the process's whole life, even after the first has ended: a second `raphp_init` with the window backend in the same process fails with `the window backend can be started only once in a process`. The consequence for the master: a poisoned or closed window shim cannot be replaced in place; the master process has to be restarted (this goes into the reaction of D47). Workers are separate processes and restart as before.
+- **Frames are drawn when the window system asks, not on a timer** (F8). A real change (the model's dirty windows) calls `request_redraw`; the frame is drawn when `RedrawRequested` arrives, which is paced by the compositor. `frames_drawn` counts frames actually put on a window. An idle window draws none: `redraws_requested` and `frames_drawn` do not move (measured: 0 over 5 seconds, 15 ms of CPU for the whole process).
+- **No clock and no pictures to read.** `raphp_headless_advance` and `raphp_headless_frame` return `UNSUPPORTED`. Until P3.8 draws, every frame is blank white.
+- **A window that cannot be made** (the window system refuses) is the command error `backend`, and nothing changes.
+- **Events about the window** (queued like any other, and never about a window PHP has destroyed): `window.close_requested` (the window is **not** closed: PHP decides, and sends `window.destroy`), `window.focus` (`focused` true or false), `window.resized` (continuous: only the latest per window is kept; `width` and `height` in logical pixels and the `scale`), `window.scale` (the scale factor changed). The model follows the size the window system chose, so a later command that does not mention the size does not undo it.
+- **Resizing from PHP is a request.** `window.set` with a new size asks the window system, which may give another size. Whatever size results is reported with `window.resized`: from winit's own event when it comes, and by the shim itself after the batch when the window system applied the request at once (Wayland does, and winit then sends no event: F62).
 
 ## The headless backend (P3.4)
 

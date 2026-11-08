@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value, json};
 
-use crate::backend::Backend;
+use crate::backend::{Backend, BackendError};
 use crate::diagnostics::Diagnostics;
 use crate::events::Event;
 use crate::protocol::{
@@ -340,14 +340,16 @@ impl Model {
         );
         backend
             .create_window(id, width, height)
-            .map_err(|reason| CommandError::new(ErrorCode::Limit, reason).about(id))?;
+            .map_err(|error| backend_error(error, id))?;
+        let title = settings.title.unwrap_or_default();
+        backend.set_title(id, &title);
 
         self.last_window_id = id;
         self.windows.insert(
             id,
             Window {
                 settings: WindowSettings {
-                    title: Some(settings.title.unwrap_or_default()),
+                    title: Some(title),
                     width: Some(width),
                     height: Some(height),
                 },
@@ -376,12 +378,13 @@ impl Model {
             // The new picture first: if it does not fit, nothing about the window changes.
             backend
                 .resize_window(id, width, height)
-                .map_err(|reason| CommandError::new(ErrorCode::Limit, reason).about(id))?;
+                .map_err(|error| backend_error(error, id))?;
         }
 
         let window = self.window_mut(id)?;
-        if settings.title.is_some() {
-            window.settings.title = settings.title;
+        if let Some(title) = settings.title {
+            backend.set_title(id, &title);
+            window.settings.title = Some(title);
         }
         window.settings.width = Some(width);
         window.settings.height = Some(height);
@@ -662,6 +665,19 @@ impl Model {
 
     // ------------------------------------------------------------ helpers
 
+    /// The window system changed a window's size (the user dragged an edge): the model follows, so that a
+    /// later command that leaves the size alone does not undo it. No redraw is asked for here (the window
+    /// system asks for the frame itself). False when there is no such window.
+    pub fn window_resized(&mut self, id: u64, width: f64, height: f64) -> bool {
+        let Some(window) = self.windows.get_mut(&id) else {
+            return false;
+        };
+        window.settings.width = Some(width);
+        window.settings.height = Some(height);
+
+        true
+    }
+
     pub fn has_window(&self, id: u64) -> bool {
         self.windows.contains_key(&id)
     }
@@ -816,4 +832,14 @@ impl Model {
             widget.text_revision += 1;
         }
     }
+}
+
+/// A refusal by the backend, as the command error that reports it.
+fn backend_error(error: BackendError, window: u64) -> CommandError {
+    let code = match error {
+        BackendError::Limit(_) => ErrorCode::Limit,
+        BackendError::Failed(_) => ErrorCode::Backend,
+    };
+
+    CommandError::new(code, error.to_string()).about(window)
 }

@@ -588,7 +588,10 @@ fn a_shim_that_is_not_headless_says_so() {
 #[test]
 fn a_bad_configuration_stops_init_with_a_reason() {
     for (text, reason) in [
-        (r#"{"backend":"window"}"#, "not built yet"),
+        (
+            r#"{"backend":"window","scale":2}"#,
+            "applies only to the headless backend",
+        ),
         (r#"{"refresh_hz":0}"#, "from 1 to 1000"),
         (r#"{"colour":1}"#, "no setting"),
         ("not json", "not valid JSON"),

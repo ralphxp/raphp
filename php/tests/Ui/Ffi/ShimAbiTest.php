@@ -30,7 +30,7 @@ final class ShimAbiTest extends TestCase
     private function ffi(): FFI
     {
         if (!is_file(self::LIBRARY)) {
-            self::markTestSkipped('the test build of the shim does not exist: run make shim');
+            self::markTestSkipped('the test build of the shim does not exist: run make shim-test');
         }
 
         return FFI::cdef($this->header(), self::LIBRARY);
@@ -423,11 +423,11 @@ final class ShimAbiTest extends TestCase
     public function testABadConfigurationIsRefusedWithAReason(): void
     {
         $ffi = $this->ffi();
-        $config = '{"backend":"window"}';
+        $config = '{"backend":"window","scale":2}'; // refused before any window is made
 
         $shim = $ffi->raphp_init($config, strlen($config));
 
         self::assertNull($shim);
-        self::assertStringContainsString('not built yet', $this->lastError($ffi, null));
+        self::assertStringContainsString('applies only to the headless backend', $this->lastError($ffi, null));
     }
 }

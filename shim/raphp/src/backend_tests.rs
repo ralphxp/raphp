@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::backend::{Backend, HeadlessBackend, HeadlessShared};
+use crate::backend::{Backend, BackendError, HeadlessBackend, HeadlessShared};
 use crate::clock::{Clock, ManualClock, SystemClock};
 use crate::config::{BackendKind, Config};
 use crate::surface::{Surface, WHITE};
@@ -43,7 +43,18 @@ fn a_bad_configuration_is_refused_with_a_reason() {
         ("[]", "must be a JSON object"),
         ("5", "must be a JSON object"),
         (r#"{"colour":"red"}"#, "no setting \"colour\""),
-        (r#"{"backend":"window"}"#, "not built yet"),
+        (
+            r#"{"backend":"window","scale":2}"#,
+            "applies only to the headless backend",
+        ),
+        (
+            r#"{"backend":"window","refresh_hz":30}"#,
+            "applies only to the headless backend",
+        ),
+        (
+            r#"{"surface_budget_mib":8,"backend":"window"}"#,
+            "applies only to the headless backend",
+        ),
         (r#"{"backend":"gpu"}"#, "must be \"headless\""),
         (r#"{"backend":5}"#, "must be \"headless\""),
         (r#"{"refresh_hz":0}"#, "from 1 to 1000"),
@@ -216,7 +227,10 @@ fn a_picture_over_the_budget_is_refused_and_leaves_the_others_alone() {
     backend.create_window(1, 400.0, 300.0).unwrap(); // 120,000 pixels
     backend.create_window(2, 400.0, 300.0).unwrap(); // 240,000 together
     let error = backend.create_window(3, 200.0, 200.0).unwrap_err(); // 280,000 would not fit
-    assert!(error.contains("more than the budget of 1 MiB"), "{error}");
+    assert!(
+        matches!(&error, BackendError::Limit(reason) if reason.contains("more than the budget of 1 MiB")),
+        "{error}"
+    );
     assert_eq!(read(&shared, 3), None, "no picture was made");
 
     // A resize that does not fit changes nothing; one that fits works.

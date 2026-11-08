@@ -23,6 +23,7 @@ mod shim;
 mod status;
 mod surface;
 mod ui_thread;
+mod window;
 
 pub use abi::{
     raphp_abi_version, raphp_diagnostics, raphp_event_fd, raphp_headless_advance,
@@ -44,6 +45,8 @@ mod headless_tests;
 mod model_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod window_tests;
 
 /// The guard, reachable from the tests with any closure.
 #[cfg(test)]

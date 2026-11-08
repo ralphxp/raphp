@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::io;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use crate::backend::{Backend, HeadlessBackend, HeadlessShared};
@@ -13,6 +13,7 @@ use crate::model::{EventSink, Model};
 use crate::protocol::{Batch, parse_batch};
 use crate::status::{RaphpStatus, ShimError};
 use crate::ui_thread::{StopOutcome, StopSignal, UiThread};
+use crate::window;
 
 /// What the UI thread is sent.
 pub(crate) enum Msg {
@@ -26,6 +27,24 @@ pub(crate) enum Msg {
         ack: Sender<bool>,
     },
 }
+
+/// How messages reach the UI thread: a channel for the headless loop, winit's proxy for the window loop.
+#[derive(Clone)]
+pub(crate) struct Commands(Arc<dyn Fn(Msg) -> bool + Send + Sync>);
+
+impl Commands {
+    fn new(send: impl Fn(Msg) -> bool + Send + Sync + 'static) -> Self {
+        Self(Arc::new(send))
+    }
+
+    /// An `Err` means the UI thread is gone.
+    fn send(&self, message: Msg) -> Result<(), ()> {
+        if (self.0)(message) { Ok(()) } else { Err(()) }
+    }
+}
+
+/// How long `raphp_init` waits for the window loop to start (my number, unmeasured).
+const WINDOW_START_WAIT: Duration = Duration::from_secs(10);
 
 /// How long a headless control call waits for the UI thread (my number).
 const HEADLESS_WAIT: Duration = Duration::from_secs(10);
@@ -44,8 +63,8 @@ pub(crate) struct Shim {
     pub diagnostics: Arc<Diagnostics>,
     /// The pictures of the headless windows; none for another backend or a test body.
     headless: Option<Arc<HeadlessShared>>,
-    /// How commands reach the UI thread; none for a shim whose UI thread is a test body.
-    commands: Option<Sender<Msg>>,
+    /// How commands reach the UI thread; empty for a shim whose UI thread is a test body.
+    commands: OnceLock<Commands>,
     ui: Mutex<Option<UiThread>>,
     shutdown_timeout: Duration,
 }
@@ -74,22 +93,39 @@ impl Shim {
     }
 
     /// Starts the real shim: its UI thread applies the commands it is sent to a [`Model`], on the backend the
-    /// configuration names, and draws frames at the backend's pace.
+    /// configuration names. The headless backend draws frames at the pace of a clock a test moves; the window
+    /// backend opens real windows, and fails here (with the reason) when there is no window system.
     pub fn start_model(
         events: Arc<EventQueue>,
         shutdown_timeout: Duration,
         config: &Config,
     ) -> io::Result<Self> {
-        let (commands, receiver) = channel::<Msg>();
-        let waker = commands.clone();
         let diagnostics = Arc::new(Diagnostics::default());
         let model = Model::new(diagnostics.clone());
+
+        match config.backend {
+            BackendKind::Headless => {
+                Self::start_headless(events, shutdown_timeout, config, diagnostics, model)
+            }
+            BackendKind::Window => Self::start_window(events, shutdown_timeout, diagnostics, model),
+        }
+    }
+
+    fn start_headless(
+        events: Arc<EventQueue>,
+        shutdown_timeout: Duration,
+        config: &Config,
+        diagnostics: Arc<Diagnostics>,
+        model: Model,
+    ) -> io::Result<Self> {
+        let (sender, receiver) = channel::<Msg>();
+        let waker = sender.clone();
         let queue = events.clone();
         let loop_diagnostics = diagnostics.clone();
         let shared = Arc::new(HeadlessShared::default());
-        let backend: Box<dyn Backend> = match config.backend {
-            BackendKind::Headless => Box::new(HeadlessBackend::new(config, shared.clone())),
-        };
+        let backend: Box<dyn Backend + Send> =
+            Box::new(HeadlessBackend::new(config, shared.clone()));
+        let commands = Commands::new(move |message| sender.send(message).is_ok());
 
         Self::launch(
             events,
@@ -106,10 +142,54 @@ impl Shim {
         )
     }
 
+    fn start_window(
+        events: Arc<EventQueue>,
+        shutdown_timeout: Duration,
+        diagnostics: Arc<Diagnostics>,
+        model: Model,
+    ) -> io::Result<Self> {
+        let (ready_sender, ready) = channel();
+        let queue = events.clone();
+        let loop_diagnostics = diagnostics.clone();
+
+        let shim = Self::launch(
+            events,
+            shutdown_timeout,
+            None,
+            diagnostics,
+            None,
+            move |stop: Arc<StopSignal>| {
+                window::run(model, queue, loop_diagnostics, stop, &ready_sender);
+            },
+        )?;
+
+        // The loop is built on the UI thread; wait for it to say whether there is a window system.
+        match ready.recv_timeout(WINDOW_START_WAIT) {
+            Ok(Ok(proxy)) => {
+                let commands = Commands::new(move |message| proxy.send_event(message).is_ok());
+                let _ = shim.commands.set(commands);
+
+                Ok(shim)
+            }
+            Ok(Err(reason)) => {
+                shim.stop();
+
+                Err(io::Error::other(reason))
+            }
+            Err(_) => {
+                shim.stop();
+
+                Err(io::Error::other(
+                    "the window system did not answer in time (is a display available?)",
+                ))
+            }
+        }
+    }
+
     fn launch<F>(
         events: Arc<EventQueue>,
         shutdown_timeout: Duration,
-        commands: Option<Sender<Msg>>,
+        commands: Option<Commands>,
         diagnostics: Arc<Diagnostics>,
         headless: Option<Arc<HeadlessShared>>,
         body: F,
@@ -122,13 +202,17 @@ impl Shim {
         let queue = events.clone();
         health.on_poison(move |cause| queue.fail(cause));
         let ui = UiThread::spawn(health.clone(), body)?;
+        let slot = OnceLock::new();
+        if let Some(commands) = commands {
+            let _ = slot.set(commands);
+        }
 
         Ok(Self {
             health,
             events,
             diagnostics,
             headless,
-            commands,
+            commands: slot,
             ui: Mutex::new(Some(ui)),
             shutdown_timeout,
         })
@@ -143,7 +227,7 @@ impl Shim {
         }
 
         let parsed = parse_batch(batch).map_err(ShimError::invalid)?;
-        let Some(commands) = &self.commands else {
+        let Some(commands) = self.commands.get() else {
             return Err(ShimError::new(
                 RaphpStatus::Unsupported,
                 "this shim has no command loop",
@@ -211,7 +295,7 @@ impl Shim {
     /// sent before and drawn the frames that are then due. With 0 it is just that wait: a barrier, which is
     /// what tests use to know that a batch has taken effect. This one call waits for the UI thread, on purpose.
     pub fn headless_advance(&self, millis: u64) -> Result<(), ShimError> {
-        let Some(commands) = self.commands.as_ref().filter(|_| self.headless.is_some()) else {
+        let Some(commands) = self.commands.get().filter(|_| self.headless.is_some()) else {
             return Err(ShimError::new(
                 RaphpStatus::Unsupported,
                 "this shim does not use the headless backend",
@@ -286,7 +370,7 @@ pub(crate) fn idle_ui_body(stop: Arc<StopSignal>) {
 
 /// Where the model's events go: into the shim's queue. A producer may have to wait for PHP (O7), and the
 /// wait ends when the queue is closed.
-struct QueueSink<'a>(&'a EventQueue);
+pub(crate) struct QueueSink<'a>(pub(crate) &'a EventQueue);
 
 impl EventSink for QueueSink<'_> {
     fn emit(&mut self, event: Event) {
@@ -333,7 +417,7 @@ fn draw_due(
 fn ui_loop(
     receiver: &Receiver<Msg>,
     mut model: Model,
-    mut backend: Box<dyn Backend>,
+    mut backend: Box<dyn Backend + Send>,
     events: &EventQueue,
     diagnostics: &Diagnostics,
     stop: &StopSignal,

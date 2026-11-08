@@ -302,7 +302,7 @@ final class ShimTest extends AsyncTestCase
 
     public function testABadConfigurationIsAStartErrorWithTheShimsReason(): void
     {
-        $this->assertStartFails(['backend' => 'window'], 'not built yet');
+        $this->assertStartFails(['backend' => 'window', 'refresh_hz' => 30], 'applies only to the headless backend');
     }
 
     public function testAnUnknownSettingIsAStartErrorToo(): void

@@ -81,7 +81,8 @@ Everything comes back through the event queue (`shim-abi.md`), as discrete event
 | `cycle` | The widget would become its own ancestor. |
 | `not_a_container`, `has_parent`, `no_parent`, `already_root`, `window_has_root` | The structure rules above. |
 | `bad_index` | `insert` beyond the end. |
-| `limit` | Too many widgets (100,000), windows (64), nesting (64), or children of a scroll view (1). |
+| `limit` | Too many widgets (100,000), windows (64), nesting (64), or children of a scroll view (1), or (headless) pictures over the memory budget. |
+| `backend` | The window system could not do it (the window backend could not make a window). |
 | `stale_text` | A text set built on an old revision (see below). |
 
 **`batch.done`**: one at the end of every **object-form** batch.
@@ -93,6 +94,8 @@ Everything comes back through the event queue (`shim-abi.md`), as discrete event
 It marks the moment the batch's commands took effect (see the contract).
 
 **`app.quit`**: `{"type": "app.quit"}`, when the command was applied. The UI loop then ends in order (this is not a failure), and later `raphp_send` calls return `CLOSED`. Events can still be read.
+
+**Window events** (window backend only, P3.6; details in `shim-abi.md`): `{"type":"window.close_requested","window":1}` (the user asked to close: nothing is closed until PHP sends `window.destroy`), `{"type":"window.focus","window":1,"focused":true}`, `{"type":"window.resized","window":1,"width":480.0,"height":320.0,"scale":1.0}` (logical pixels; continuous, so only the latest is kept) and `{"type":"window.scale","window":1,"scale":2.0}`. After `window.destroy` no event about that window is queued (rule 4 below).
 
 ## The ordering contract (R15)
 

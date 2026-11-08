@@ -11,7 +11,7 @@ use Raphp\Ui\Ffi\Library;
 use Raphp\Ui\Ffi\Loader;
 
 /**
- * Where the tests find the shim: the debug build that `make shim` makes with the `test-hooks` feature, and the
+ * Where the tests find the shim: the debug build that `make shim-test` makes with the `test-hooks` feature, and the
  * committed header.
  */
 final class ShimFixture
@@ -26,7 +26,7 @@ final class ShimFixture
     public static function library(?LoggerInterface $logger = null): Library
     {
         if (!is_file(self::LIBRARY)) {
-            Assert::markTestSkipped('the test build of the shim does not exist: run make shim');
+            Assert::markTestSkipped('the test build of the shim does not exist: run make shim-test');
         }
 
         return (new Loader($logger ?? new NullLogger()))->load(self::LIBRARY, self::HEADER);

@@ -11,6 +11,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - Renamed the project from the code name niphy to Raphp (namespace `Raphp\`, `libraphp`, `raphp.json`, `RAPHP_*` variables, CLI `rlm`). Spike code under `spikes/` keeps the old names.
 
 ### Added
+- Window backend for the shim (step P3.6): real windows on Wayland and X11 through winit, drawn only when the window system asks, with events for close requests, focus, resizing and scale; opt-in tests that open a real window, and a checklist for the part only a person can check.
 - PHP binding for the shim (step P3.5): a loader that checks FFI, the files and the ABI version and says what to do when something is wrong; a `Shim` that sends batches, watches the shim's wake-up descriptor in the event loop and delivers its events in order; and a rule that a started worker inherits only the descriptors it is given.
 - Shim headless backend (step P3.4): the shim's loop, commands and events run with no window system, on a clock that moves only when told to, with in-memory pictures of the windows, frame pacing and a memory budget, so that the whole path from PHP can be tested without a display.
 - Shim command model (step P3.3): a strict command protocol for windows and widgets with a tree that the shim owns, errors reported as events tied to their batch, a read-only diagnostic call, golden test files and a written ordering contract.

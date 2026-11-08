@@ -44,6 +44,8 @@ pub(crate) enum ErrorCode {
     WindowHasRoot,
     AlreadyRoot,
     Limit,
+    /// The window system could not do what was asked (no display, a window it refused).
+    Backend,
     StaleText,
 }
 
@@ -68,6 +70,7 @@ impl ErrorCode {
             Self::WindowHasRoot => "window_has_root",
             Self::AlreadyRoot => "already_root",
             Self::Limit => "limit",
+            Self::Backend => "backend",
             Self::StaleText => "stale_text",
         }
     }
