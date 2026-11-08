@@ -131,10 +131,6 @@ final class Shim
      */
     public function pump(): void
     {
-        if ($this->handle === null) {
-            return;
-        }
-
         if ($this->wakeUp !== null) {
             fread($this->wakeUp, 8); // clear first, drain after: the order that cannot lose a wake-up
         }

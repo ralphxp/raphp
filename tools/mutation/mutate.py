@@ -16,7 +16,7 @@ What makes it quick (the old version ran a whole test directory for every mutant
   seconds, not the whole run;
 - the baseline (unmodified code, same tests) must pass first, otherwise every mutant would look killed.
 
-It works on a COPY of php/src, php/tests, docs/protocol and vendor in a temporary directory, never in
+It works on a COPY of php/src, php/tests, docs/protocol, vendor and the shim's header and test library in a temporary directory, never in
 the repository, and removes it when done. Exit code 0 even with survivors: read the list.
 """
 import json
@@ -51,10 +51,17 @@ FOCUS = {
     'Ipc/Transport/StreamTransport.php': 'StreamTransport',
     'Process/WorkerHandle.php': 'ProcessSpawner',
     'Process/OutputCapture.php': 'ProcessSpawner',
-    'Process/ProcessSpawner.php': 'ProcessSpawner|ProcessOrphan',
+    'Process/ProcessSpawner.php': 'ProcessSpawner|ProcessOrphan|ShimWorkerSpawn',
     'Process/OrphanGuard.php': 'WorkerSpec|ProcessOrphan|ProcessSpawner',
     'Process/ChannelFactory.php': 'ChannelFactory|ProcessSpawner|ProcessOrphan',
     'Runtime/Libc/ParentDeathSignal.php': 'ProcessOrphan',
+    'Runtime/Libc/DescriptorGuard.php': 'DescriptorGuard|ShimWorkerSpawn',
+    'Ui/Ffi/Shim.php': 'ShimTest|ShimWorkerSpawn',
+    'Ui/Ffi/Loader.php': 'LoaderTest',
+    'Ui/Ffi/Library.php': 'ShimTest',
+    'Ui/Ffi/Internal/Native.php': 'ShimTest',
+    'Ui/Ffi/ShimEvent.php': 'ShimTest',
+    'Ui/Ffi/AbiVersion.php': 'AbiVersionTest|LoaderTest',
     'Supervisor/Internal/Member.php': 'SupervisorTest',
     'Supervisor/Supervisor.php': 'SupervisorTest',
     'Supervisor/RestartPolicy.php': 'SupervisorValues|SupervisorTest',
@@ -108,6 +115,13 @@ def main() -> int:
         shutil.copytree(ROOT / 'php/tests', work / 'php/tests')
         shutil.copytree(ROOT / 'docs/protocol', work / 'docs/protocol')
         shutil.copytree(ROOT / 'vendor', work / 'vendor', symlinks=True)
+        # The tests of the PHP binding load the real shim: its header and the test build of the library.
+        (work / 'shim/include').mkdir(parents=True)
+        shutil.copy(ROOT / 'shim/include/raphp.h', work / 'shim/include/raphp.h')
+        library = ROOT / 'shim/target/debug/libraphp.so'
+        if library.is_file():
+            (work / 'shim/target/debug').mkdir(parents=True)
+            shutil.copy(library, work / 'shim/target/debug/libraphp.so')
         for name in ('composer.json', 'composer.lock', 'phpunit.xml'):
             shutil.copy(ROOT / name, work / name)
         subprocess.run(['composer', 'dump-autoload', '-q'], cwd=work, capture_output=True)

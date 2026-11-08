@@ -7,6 +7,7 @@ namespace Raphp\Tests\Runtime\Libc;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 use Raphp\Runtime\Libc\DescriptorGuard;
+use Raphp\Runtime\Libc\LibcException;
 use Raphp\Tests\Support\ShimFixture;
 
 final class DescriptorGuardTest extends TestCase
@@ -71,6 +72,27 @@ final class DescriptorGuardTest extends TestCase
 
         self::assertFalse($this->closesOnExec($descriptor), 'below the first number: left as it was');
         self::assertNotFalse(fstat($stream));
+    }
+
+    #[DataProvider('ways')]
+    public function testTheFirstNumberItIsGivenIsMarkedToo(bool $useCloseRange): void
+    {
+        [$descriptor, $stream] = $this->openInheritable();
+
+        (new DescriptorGuard($useCloseRange))->closeOnExecFrom($descriptor);
+
+        self::assertTrue($this->closesOnExec($descriptor));
+        self::assertNotFalse(fstat($stream));
+    }
+
+    public function testWhenLibcCannotBeLoadedItIsALibcExceptionThatSaysSo(): void
+    {
+        try {
+            (new DescriptorGuard(library: '/nonexistent/libc.so'))->closeOnExecFrom();
+            self::fail('there is no such library');
+        } catch (LibcException $exception) {
+            self::assertStringContainsString('/nonexistent/libc.so could not be loaded', $exception->getMessage());
+        }
     }
 
     public function testItIsHarmlessToRunTwice(): void

@@ -115,6 +115,7 @@ $handlers->register('record-term', static function (RpcRequest $request): string
     EventLoop::onSignal(SIGTERM, static function () use ($path): void {
         file_put_contents(is_string($path) ? $path : '/dev/null', 'sigterm'); // noted, and ignored: the worker keeps running
     });
+    delay(0.02); // the watcher is armed on the next tick; answer after it
 
     return 'ok';
 });
@@ -192,6 +193,7 @@ $handlers->register('handler-term', static function (): string {
     EventLoop::onSignal(SIGTERM, static function (): never {
         exit(0);
     });
+    delay(0.02); // Revolt arms a signal watcher on the next tick: answer only once the handler can run, or a quick SIGTERM kills the worker instead
 
     return 'ok';
 });

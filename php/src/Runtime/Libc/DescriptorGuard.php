@@ -36,8 +36,12 @@ final class DescriptorGuard
 
     /**
      * @param bool $useCloseRange false goes straight to the descriptor-by-descriptor way (the one for an older kernel; tests use it)
+     * @param string $library the C library to load (tests give one that does not exist, to see what happens when libc is not usable)
      */
-    public function __construct(private readonly bool $useCloseRange = true) {}
+    public function __construct(
+        private readonly bool $useCloseRange = true,
+        private readonly string $library = 'libc.so.6',
+    ) {}
 
     /**
      * @param int $first the lowest descriptor to mark; 3 keeps standard input, output and error as they are
@@ -85,9 +89,9 @@ final class DescriptorGuard
         }
 
         try {
-            $this->libc = FFI::cdef('int close_range(unsigned int first, unsigned int last, int flags); int fcntl(int fd, int cmd, ...);', 'libc.so.6');
+            $this->libc = FFI::cdef('int close_range(unsigned int first, unsigned int last, int flags); int fcntl(int fd, int cmd, ...);', $this->library);
         } catch (FfiException $exception) {
-            throw new LibcException('libc.so.6 could not be loaded: ' . $exception->getMessage(), 0, $exception);
+            throw new LibcException("{$this->library} could not be loaded: " . $exception->getMessage(), 0, $exception);
         }
 
         return $this->libc;

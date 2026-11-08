@@ -14,10 +14,12 @@ use Raphp\Ipc\Message\Hello;
 use Raphp\Ipc\Protocol;
 use Raphp\Process\ChannelFactory;
 use Raphp\Process\ProcessSpawner;
+use Raphp\Process\SpawnException;
 use Raphp\Process\WorkerHandle;
 use Raphp\Rpc\HandlerRegistry;
 use Raphp\Rpc\RpcPeer;
 use Raphp\Rpc\RpcPeerOptions;
+use Raphp\Runtime\Libc\DescriptorGuard;
 use Raphp\Tests\Support\AsyncTestCase;
 use Raphp\Tests\Support\ShimFixture;
 use Raphp\Tests\Support\WorkerFixture;
@@ -27,10 +29,12 @@ use Raphp\Ui\Ffi\ShimEvent;
 /**
  * R17: a worker is started with `proc_open` while a live, multi-threaded shim exists in the master (plan P3.5).
  *
- * The contract these tests pin: **a worker inherits nothing that the shim owns, nor PHP's watcher of it**: its
- * descriptors are exactly those of a worker started with no shim in the master. (Descriptors 0 to 3 are the ones the
- * spawner gives it; PHP itself also passes on a few more, see F59, which are the same with or without the shim.)
- * They run with a headless shim; P3.6 repeats them with a real window open, where the display connection and
+ * The contract these tests pin: **a worker inherits only what the spawner names in `proc_open`** (descriptors 0 to 3:
+ * stdin, stdout, stderr and the channel), and nothing the shim owns, nor PHP's watcher of it, nor anything else
+ * the master holds. The first version of these tests failed: PHP's `php://fd/N` makes a duplicate of the shim's
+ * wake-up descriptor that is *not* close-on-exec, and the worker inherited it (as it did PHP's own leftovers, F59).
+ * The spawner now sweeps close-on-exec over the master's descriptors just before it starts a worker (D51).
+ * These run with a headless shim; P3.6 repeats them with a real window open, where the display connection and
  * the other descriptors of the window system are also in the master.
  */
 #[Group('slow')]
@@ -150,8 +154,24 @@ final class ShimWorkerSpawnTest extends AsyncTestCase
         self::assertSame(
             count(array_keys($baseline, 'anon_inode:[eventfd]', true)),
             count(array_keys($withShim, 'anon_inode:[eventfd]', true)),
-            'the shim\'s eventfd and PHP\'s duplicate of it are close-on-exec (F59: the eventfd that is there belongs to PHP itself)',
+            'neither the shim\'s eventfd nor PHP\'s duplicate of it reaches the worker (the eventfd it has is its own loop\'s)',
         );
+    }
+
+    public function testWhenTheSweepCannotRunNoWorkerIsStartedAndNothingIsLeftOpen(): void
+    {
+        $spawner = new ProcessSpawner(new ChannelFactory(), new NullLogger(), new DescriptorGuard(library: '/nonexistent/libc.so'));
+        $before = ShimFixture::descriptors();
+
+        try {
+            $spawner->spawn(WorkerFixture::spec('never'));
+            self::fail('a worker must not be started when its descriptors cannot be kept from it');
+        } catch (SpawnException $exception) {
+            self::assertStringContainsString('could not start the worker "never"', $exception->getMessage());
+            self::assertStringContainsString('/nonexistent/libc.so could not be loaded', $exception->getMessage());
+        }
+
+        self::assertCount(count($before), ShimFixture::descriptors(), 'the channel that was made is closed again');
     }
 
     public function testWorkersCanBeStartedAgainAndAgainWhileTheUiThreadIsBusyAndTheShimStaysWhole(): void

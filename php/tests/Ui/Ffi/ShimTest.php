@@ -114,6 +114,22 @@ final class ShimTest extends AsyncTestCase
         self::assertSame([], $this->loopErrors, 'nothing leaked into the loop');
     }
 
+    public function testManyListenersShareOneWatcherAndOneDescriptor(): void
+    {
+        $watchers = count(EventLoop::getIdentifiers());
+        $descriptors = count(ShimFixture::descriptors());
+        $shim = $this->start();
+        $afterStart = count(ShimFixture::descriptors());
+
+        $shim->listen(static function (): void {});
+        $shim->listen(static function (): void {});
+        $shim->listen(static function (): void {});
+
+        self::assertSame($watchers + 1, count(EventLoop::getIdentifiers()), 'one watcher for three listeners');
+        self::assertSame($afterStart + 1, count(ShimFixture::descriptors()), 'and one descriptor');
+        self::assertGreaterThan($descriptors, $afterStart);
+    }
+
     public function testCloseStopsWatchingAndFreesTheDescriptorAndLaterCallsAreClosedErrors(): void
     {
         $before = ShimFixture::descriptors();
@@ -201,6 +217,7 @@ final class ShimTest extends AsyncTestCase
 
         self::assertSame(['large', 'after'], array_map(static fn(ShimEvent $event): string => $event->type, $events));
         self::assertGreaterThan(200_000, strlen(json_encode($events[0]->fields, JSON_THROW_ON_ERROR)));
+        self::assertFalse($this->logs->hasErrorRecords());
     }
 
     public function testASmallEventsInTheSamePollAreAllDelivered(): void
@@ -221,6 +238,7 @@ final class ShimTest extends AsyncTestCase
         }
 
         self::assertSame(range(1, 50), $numbers, 'in order, none lost');
+        self::assertFalse($this->logs->hasErrorRecords(), 'a trailing newline is not an event');
     }
 
     public function testTheHeadlessClockFramesAndDiagnosticsAreReachableFromPhp(): void
@@ -247,6 +265,39 @@ final class ShimTest extends AsyncTestCase
         } catch (ShimException $exception) {
             self::assertSame(Native::STATUS_INVALID_ARGUMENT, $exception->status);
         }
+    }
+
+    public function testAWatchedWakeUpIsClearedSoTheLoopIsNotWokenAgainAndAgain(): void
+    {
+        [$native, $cdata, $shim] = $this->startRaw();
+        $recorder = new ShimEventRecorder($shim);
+        $native->send($cdata, '#emit {"type":"once"}');
+        $recorder->until(ShimEventRecorder::ofType('once'));
+        $this->settle(0.05);
+
+        $stream = fopen('php://fd/' . $native->eventFd($cdata), 'r');
+        self::assertNotFalse($stream);
+        $read = [$stream];
+        $write = null;
+        $except = null;
+        $ready = stream_select($read, $write, $except, 0, 0);
+        fclose($stream);
+
+        self::assertSame(0, $ready, 'the descriptor was cleared before the events were drained, so nothing is pending');
+    }
+
+    public function testANegativeTimeDoesNotMoveTheClock(): void
+    {
+        $shim = $this->start(['refresh_hz' => 100]);
+        $shim->send([['op' => 'window.create', 'id' => 1], ['op' => 'widget.create', 'id' => 1, 'type' => 'label'], ['op' => 'window.set_root', 'id' => 1, 'widget' => 1]]);
+        $shim->advance();
+        $shim->send([['op' => 'widget.set', 'id' => 1, 'props' => ['text' => 'b']]]);
+
+        $shim->advance(-1000);
+
+        $windows = $shim->diagnostics()['windows'];
+        self::assertIsArray($windows);
+        self::assertSame(['redraws_requested' => 2, 'frames_drawn' => 1], $windows['1'], 'no time passed, so the second frame is still waiting');
     }
 
     public function testABadConfigurationIsAStartErrorWithTheShimsReason(): void
