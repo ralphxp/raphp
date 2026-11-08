@@ -163,7 +163,7 @@ The same UI loop, the same model and the same commands run on a backend with no 
 
 ## The glibc floor (R23, D21)
 
-`make shim` builds the release library and prints the highest `GLIBC_x.y` symbol version it needs, and records it in `shim/target/release/glibc-floor.txt`. On this machine (glibc 2.43) it is **GLIBC_2.34**, the same as the Phase 0 headless figure. The mechanism for building against an older glibc (D21: `cargo-zigbuild` or a container) is **not chosen yet**: choosing it needs a download I did not make, and the plan verifies it in P6.1.
+`make shim` builds the release library and prints the highest `GLIBC_x.y` symbol version it needs, and records it in `shim/target/release/glibc-floor.txt`. On this machine (glibc 2.43) it was **GLIBC_2.34** while the shim had no window code (the Phase 0 headless figure) and became **GLIBC_2.43** with the window backend (P3.6), as the Phase 0 windowed measurement predicted: the window dependencies bring `acosf@GLIBC_2.43` (glibc 2.43's new versioned maths function, bound because the host has it) and `pidfd_spawnp` and `pidfd_getpid@GLIBC_2.39` (process-spawning code). The 2.43 figure is the build host's, not a need of the code, which is exactly what D21 (build against an old glibc) removes. The mechanism for building against an older glibc (D21: `cargo-zigbuild` or a container) is **not chosen yet**: choosing it needs a download I did not make, and the plan verifies it in P6.1.
 
 ## The header
 

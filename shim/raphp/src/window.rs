@@ -314,7 +314,8 @@ impl ApplicationHandler<Msg> for App {
                 }
             }
             WindowEvent::RedrawRequested => {
-                if self.windows.draw(id) {
+                let drawn = self.windows.draw(id);
+                if drawn {
                     self.diagnostics.frame_drawn(id);
                 }
             }
@@ -326,7 +327,7 @@ impl ApplicationHandler<Msg> for App {
 /// What `raphp_init` says when the loop cannot be built. winit allows ONE event loop per process for the
 /// whole life of the process, even after the first has ended (found in P3.6, F61), so a second window
 /// shim in the same process cannot be started: the master has to be restarted.
-fn start_error(error: &EventLoopError) -> String {
+pub(crate) fn start_error(error: &EventLoopError) -> String {
     match error {
         EventLoopError::RecreationAttempt => "the window backend can be started only once in a process: winit allows one event loop per process, even after the first has ended. Restart the process".to_owned(),
         other => format!("the window system is not available: {other}"),

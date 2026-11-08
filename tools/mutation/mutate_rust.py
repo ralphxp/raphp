@@ -6,7 +6,8 @@
 `mutants.json` is a list of [file relative to shim/raphp/src, text to find, replacement, label]. The text
 must occur exactly once. Each change is made in a COPY of `shim/` and `docs/protocol/` (never in the repository), and
 `cargo test -p raphp-shim --lib` must fail for the mutant to count as killed. A mutant that does not
-compile is "not applicable". The shim has no dependencies, so each build takes a few seconds.
+compile is "not applicable". The shim's dependencies (winit and softbuffer since P3.6) take minutes to build,
+so set RAPHP_MUTATION_TARGET to a directory to keep them between runs; each mutant then builds in seconds.
 """
 import json
 import shutil
@@ -20,7 +21,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def cargo_test(work: Path, timeout: int) -> tuple[int, str]:
-    env = {**__import__('os').environ, 'CARGO_TARGET_DIR': str(work / 'target')}
+    os = __import__('os')
+    env = {**os.environ, 'CARGO_TARGET_DIR': os.environ.get('RAPHP_MUTATION_TARGET') or str(work / 'target')}
     try:
         done = subprocess.run(['cargo', 'test', '-p', 'raphp-shim', '--lib', '--offline'], cwd=work / 'shim', env=env,
                               capture_output=True, timeout=timeout)

@@ -20,7 +20,7 @@ use crate::model::Model;
 use crate::protocol::parse_batch;
 use crate::shim::RaphpShim;
 use crate::status::RaphpStatus;
-use crate::window::{close_requested_event, focus_event, resized_event, scale_event};
+use crate::window::{close_requested_event, focus_event, resized_event, scale_event, start_error};
 use crate::{
     raphp_diagnostics, raphp_init, raphp_last_error, raphp_poll, raphp_send, raphp_shutdown,
 };
@@ -102,6 +102,94 @@ impl Backend for Refusing {
     fn advance_clock(&mut self, _millis: u64) -> bool {
         false
     }
+}
+
+/// A backend that makes every window and records the titles it is told to show.
+#[derive(Default)]
+struct Recording {
+    titles: Vec<(u64, String)>,
+}
+
+impl Backend for Recording {
+    fn clock(&self) -> &dyn Clock {
+        static CLOCK: std::sync::LazyLock<ManualClock> =
+            std::sync::LazyLock::new(ManualClock::default);
+        &*CLOCK
+    }
+
+    fn frame_interval(&self) -> Duration {
+        Duration::ZERO
+    }
+
+    fn create_window(&mut self, _id: u64, _width: f64, _height: f64) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    fn resize_window(&mut self, _id: u64, _width: f64, _height: f64) -> Result<(), BackendError> {
+        Ok(())
+    }
+
+    fn destroy_window(&mut self, _id: u64) {}
+
+    fn set_title(&mut self, id: u64, title: &str) {
+        self.titles.push((id, title.to_owned()));
+    }
+
+    fn draw(&mut self, _id: u64, _model: &Model) {}
+
+    fn advance_clock(&mut self, _millis: u64) -> bool {
+        false
+    }
+}
+
+#[test]
+fn the_title_reaches_the_backend_when_a_window_is_made_and_when_it_changes_and_only_then() {
+    let mut model = Model::new(Arc::new(Diagnostics::default()));
+    let mut backend = Recording::default();
+
+    apply(
+        &mut model,
+        &mut backend,
+        &json!([{"op": "window.create", "id": 1, "title": "First"}]),
+    );
+    apply(
+        &mut model,
+        &mut backend,
+        &json!([{"op": "window.create", "id": 2}]),
+    );
+    apply(
+        &mut model,
+        &mut backend,
+        &json!([{"op": "window.set", "id": 1, "width": 500}]),
+    );
+    apply(
+        &mut model,
+        &mut backend,
+        &json!([{"op": "window.set", "id": 1, "title": "Second"}]),
+    );
+
+    assert_eq!(
+        backend.titles,
+        [
+            (1, "First".to_owned()),
+            (2, String::new()),
+            (1, "Second".to_owned())
+        ],
+        "a window without a title gets an empty one, and a resize says nothing about the title"
+    );
+}
+
+#[test]
+fn a_loop_that_cannot_be_built_says_why_and_a_second_one_says_what_to_do() {
+    let again = start_error(&winit::error::EventLoopError::RecreationAttempt);
+    assert!(again.contains("only once in a process"), "{again}");
+    assert!(again.contains("Restart the process"), "{again}");
+
+    let other = start_error(&winit::error::EventLoopError::ExitFailure(3));
+    assert!(
+        other.contains("the window system is not available"),
+        "{other}"
+    );
 }
 
 fn apply(model: &mut Model, backend: &mut dyn Backend, commands: &Value) -> Vec<Value> {
