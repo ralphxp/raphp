@@ -971,3 +971,76 @@ fn a_widget_type_must_be_a_string() {
         ErrorCode::BadField
     );
 }
+
+#[test]
+fn only_containers_take_children_and_a_scroll_view_takes_one() {
+    let mut model = model();
+    run(
+        &mut model,
+        1,
+        json!([
+            {"op":"widget.create","id":1,"type":"label"},
+            {"op":"widget.create","id":2,"type":"label"},
+            {"op":"widget.create","id":3,"type":"scroll_view"},
+            {"op":"widget.create","id":4,"type":"label"},
+        ]),
+    );
+
+    let events = run(
+        &mut model,
+        2,
+        json!([
+            {"op":"widget.append","parent":1,"child":2},
+            {"op":"widget.append","parent":3,"child":2},
+            {"op":"widget.append","parent":3,"child":4},
+        ]),
+    );
+
+    assert_eq!(
+        errors(&events),
+        [(0, "not_a_container"), (2, "limit")]
+            .map(|(i, c)| (i, c.to_owned()))
+            .to_vec()
+    );
+    assert_eq!(model.children_of(3), vec![2]);
+}
+
+#[test]
+fn insert_puts_a_child_at_an_index_and_refuses_one_beyond_the_end() {
+    let mut model = model();
+    run(
+        &mut model,
+        1,
+        json!([
+            {"op":"widget.create","id":1,"type":"column"},
+            {"op":"widget.create","id":2,"type":"label"},
+            {"op":"widget.create","id":3,"type":"label"},
+            {"op":"widget.create","id":4,"type":"label"},
+            {"op":"widget.create","id":5,"type":"label"},
+            {"op":"widget.create","id":6,"type":"label"},
+            {"op":"widget.append","parent":1,"child":2},
+            {"op":"widget.append","parent":1,"child":3},
+        ]),
+    );
+
+    let events = run(
+        &mut model,
+        2,
+        json!([
+            {"op":"widget.insert","parent":1,"child":4,"index":0},
+            {"op":"widget.insert","parent":1,"child":5,"index":3},
+            {"op":"widget.insert","parent":1,"child":6,"index":5},
+        ]),
+    );
+
+    assert_eq!(
+        model.children_of(1),
+        vec![4, 2, 3, 5],
+        "index 3 was the end and is allowed"
+    );
+    assert_eq!(
+        errors(&events),
+        vec![(2, "bad_index".to_owned())],
+        "index 5 is past the four children"
+    );
+}

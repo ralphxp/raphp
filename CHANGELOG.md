@@ -11,6 +11,7 @@ All notable changes are recorded here. The format follows [Keep a Changelog](htt
 - Renamed the project from the code name niphy to Raphp (namespace `Raphp\`, `libraphp`, `raphp.json`, `RAPHP_*` variables, CLI `rlm`). Spike code under `spikes/` keeps the old names.
 
 ### Added
+- Shim command model (step P3.3): a strict command protocol for windows and widgets with a tree that the shim owns, errors reported as events tied to their batch, a read-only diagnostic call, golden test files and a written ordering contract.
 - Shim event queue (step P3.2): events from the shim to PHP through a queue and a wake-up descriptor, with coalescing of continuous events, back-pressure, a contract for oversized events, and a last `shim.failed` event when the shim fails.
 - Shim workspace and C ABI (step P3.1): `libraphp` with five functions, a committed C header, a contract for panics and for failure of the shim's UI thread, and a glibc report; a Rust mutation-testing tool.
 - Blocking-calls guide (step P2B.5) and the `examples/large-file` demonstration: which PHP calls stop the event loop, how long they stalled it, and what to use instead.
